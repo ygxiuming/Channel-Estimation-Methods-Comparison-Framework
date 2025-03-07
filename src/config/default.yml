@@ -1,0 +1,210 @@
+# 信道估计实验配置文件
+
+# 实验基本设置
+experiment:
+  # 实验名称，用于保存结果和日志
+  name: 'channel_estimation'
+  # 实验描述
+  description: '信道估计方法比较研究'
+  # 随机种子，用于复现实验结果
+  seed: 42
+  # 是否使用GPU
+  use_cuda: true
+  # 结果保存路径
+  save_dir: 'results'
+  # 结果图保存路径
+  plot_dir: 'plots'
+  # 是否启用详细日志
+  verbose: true
+
+# 信道参数设置
+channel:
+  # 发射天线数量
+  n_tx: 4
+  # 接收天线数量
+  n_rx: 4
+  # 导频符号长度（等于发射天线数）
+  n_pilot: 16
+  # 信噪比（dB）
+  snr_db: 10
+  # 采样数量
+  n_samples: 10000
+  # 信道类型：'rayleigh' 或 'rician'
+  type: 'rayleigh'
+  # Rician K因子（仅在type='rician'时有效）
+  rician_k: 1.0
+
+# 数据处理设置
+data:
+  # 数据预处理
+  preprocessing:
+    # 归一化方法：'z-score' 或 'min-max'
+    normalization: 'z-score'
+    # 是否移除异常值
+    remove_outliers: true
+    # 异常值阈值（标准差的倍数）
+    outlier_threshold: 3.0
+  
+  # 数据增强
+  augmentation:
+    # 是否启用数据增强
+    enabled: true
+    # 增强方法列表
+    methods: ['noise', 'phase_shift', 'magnitude_scale']
+    # 高斯噪声标准差
+    noise_std: 0.1
+    # 相位偏移范围（弧度）
+    phase_shift_range: [-0.1, 0.1]
+    # 幅度缩放范围
+    magnitude_scale_range: [0.9, 1.1]
+  
+  # 数据集划分
+  split:
+    # 训练集比例
+    train_ratio: 0.7
+    # 验证集比例
+    val_ratio: 0.15
+    # 测试集比例（自动计算为1-train_ratio-val_ratio）
+    test_ratio: 0.15
+  
+  # 数据加载
+  loader:
+    # 批次大小
+    batch_size: 128
+    # 是否打乱训练数据
+    shuffle: true
+    # 数据加载线程数
+    num_workers: 4
+    # 是否将数据固定在内存中
+    pin_memory: true
+
+# 传统估计器设置
+traditional:
+  # LS估计器参数
+  ls:
+    # 是否使用正则化
+    regularization: true
+    # 正则化参数
+    lambda: 0.01
+  
+  # LMMSE估计器参数
+  lmmse:
+    # 是否使用自适应SNR估计
+    adaptive_snr: true
+    # 信道相关矩阵估计方法：'sample' 或 'theoretical'
+    correlation_method: 'sample'
+  
+  # ML估计器参数
+  ml:
+    # 最大迭代次数
+    max_iter: 100
+    # 收敛阈值
+    tol: 1e-6
+    # 学习率
+    learning_rate: 0.01
+
+# 深度学习模型设置
+models:
+  # 通用设置
+  common:
+    # 学习率
+    learning_rate: 0.001
+    # 权重衰减
+    weight_decay: 0.0001
+    # Dropout率
+    dropout: 0.3
+    # 批归一化动量
+    bn_momentum: 0.1
+  
+  # RNN模型参数
+  rnn:
+    # 隐藏层大小
+    hidden_size: 256
+    # 层数
+    num_layers: 2
+    # RNN类型：'vanilla', 'lstm', 'gru'
+    rnn_type: 'vanilla'
+  
+  # LSTM模型参数
+  lstm:
+    # 隐藏层大小
+    hidden_size: 256
+    # 层数
+    num_layers: 2
+    # 是否使用双向LSTM
+    bidirectional: true
+  
+  # GRU模型参数
+  gru:
+    # 隐藏层大小
+    hidden_size: 256
+    # 层数
+    num_layers: 2
+    # 是否使用双向GRU
+    bidirectional: true
+  
+  # 混合模型参数
+  hybrid:
+    # RNN部分隐藏层大小
+    rnn_hidden_size: 256
+    # 全连接层大小
+    fc_sizes: [512, 256]
+
+# 训练设置
+training:
+  # 训练轮数
+  epochs: 100
+  # 早停设置
+  early_stopping:
+    # 是否启用早停
+    enabled: true
+    # 早停耐心值
+    patience: 10
+    # 最小改善阈值
+    min_delta: 1e-4
+  
+  # 学习率调度器
+  scheduler:
+    # 调度器类型：'reduce_on_plateau', 'cosine', 'step'
+    type: 'reduce_on_plateau'
+    # 降低学习率的因子
+    factor: 0.1
+    # 降低学习率前的耐心值
+    patience: 5
+    # 最小学习率
+    min_lr: 1e-6
+  
+  # 模型保存
+  checkpointing:
+    # 是否启用检查点保存
+    enabled: true
+    # 保存频率（每N个epoch）
+    save_freq: 10
+    # 是否只保存最佳模型
+    save_best_only: false
+    # 最大保存检查点数量
+    max_to_keep: 5
+
+# 评估设置
+evaluation:
+  # 评估指标列表
+  metrics: ['mse', 'nmse', 'ber']
+  # 是否计算置信区间
+  confidence_interval: true
+  # 置信水平
+  confidence_level: 0.95
+  # 是否保存预测结果
+  save_predictions: true
+
+# TensorBoard设置
+tensorboard:
+  # 是否启用TensorBoard
+  enabled: true
+  # 更新频率（每N个batch）
+  update_freq: 10
+  # 是否记录梯度直方图
+  histogram_freq: 1
+  # 是否记录模型图
+  write_graph: true
+  # 是否记录配置文件
+  write_config: true 
