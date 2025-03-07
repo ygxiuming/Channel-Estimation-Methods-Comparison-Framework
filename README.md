@@ -252,6 +252,6 @@ traditional:
 
 # 作者信息
 
-作者：修明
-邮箱：lzmpt@qq.com
+- 作者：修明
+- 邮箱：lzmpt@qq.com
 
