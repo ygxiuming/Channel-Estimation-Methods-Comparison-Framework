@@ -1,0 +1,370 @@
+{
+  "config": {
+    "experiment": {
+      "name": "smoke_test",
+      "description": "全流程冒烟验证",
+      "seed": 42,
+      "use_cuda": false,
+      "save_dir": "results_smoke",
+      "plot_dir": "plots_smoke"
+    },
+    "channel": {
+      "n_tx": 4,
+      "n_rx": 4,
+      "n_pilot": 16,
+      "snr_list": [
+        0,
+        20
+      ],
+      "n_samples": 512,
+      "type": "rayleigh",
+      "rician_k": 1.0
+    },
+    "data": {
+      "augmentation": {
+        "enabled": false,
+        "methods": [
+          "phase_shift",
+          "magnitude_scale"
+        ],
+        "phase_shift_range": [
+          -3.14159,
+          3.14159
+        ],
+        "magnitude_scale_range": [
+          0.8,
+          1.25
+        ]
+      },
+      "split": {
+        "train_ratio": 0.7,
+        "val_ratio": 0.15
+      },
+      "loader": {
+        "batch_size": 64,
+        "num_workers": 0,
+        "pin_memory": false
+      }
+    },
+    "traditional": {
+      "ls": {
+        "regularization": true,
+        "lambda": 0.01
+      },
+      "lmmse": {
+        "correlation_method": "theoretical"
+      }
+    },
+    "dl": {
+      "input_modes": [
+        "raw",
+        "ls_refine"
+      ],
+      "models": [
+        "CNN",
+        "GRU"
+      ]
+    },
+    "models": {
+      "common": {
+        "learning_rate": 0.001,
+        "dropout": 0.3
+      },
+      "rnn": {
+        "hidden_size": 64,
+        "num_layers": 1
+      },
+      "lstm": {
+        "hidden_size": 64,
+        "num_layers": 1
+      },
+      "gru": {
+        "hidden_size": 64,
+        "num_layers": 1
+      },
+      "hybrid": {
+        "rnn_hidden_size": 64
+      }
+    },
+    "training": {
+      "epochs": 3,
+      "early_stopping": {
+        "patience": 2
+      }
+    },
+    "evaluation": {
+      "n_test": 256,
+      "n_trials": 1,
+      "ber_symbols": 50,
+      "equalizer": "mmse"
+    }
+  },
+  "results": {
+    "LS": {
+      "0": {
+        "trials": [
+          {
+            "mse": 0.3085464510597762,
+            "nmse": 0.3069891570960606,
+            "nmse_db": -5.128769635993908,
+            "ber": 0.26
+          }
+        ],
+        "mse_mean": 0.3085464510597762,
+        "mse_std": 0.0,
+        "nmse_mean": 0.3069891570960606,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -5.128769635993908,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.26,
+        "ber_std": 0.0
+      },
+      "20": {
+        "trials": [
+          {
+            "mse": 0.0033618057391777627,
+            "nmse": 0.003323935818612306,
+            "nmse_db": -24.783473705352247,
+            "ber": 0.008671875
+          }
+        ],
+        "mse_mean": 0.0033618057391777627,
+        "mse_std": 0.0,
+        "nmse_mean": 0.003323935818612306,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -24.783473705352247,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.008671875,
+        "ber_std": 0.0
+      }
+    },
+    "LMMSE": {
+      "0": {
+        "trials": [
+          {
+            "mse": 0.2446881471773596,
+            "nmse": 0.24345315849645519,
+            "nmse_db": -6.135845866605663,
+            "ber": 0.2592578125
+          }
+        ],
+        "mse_mean": 0.2446881471773596,
+        "mse_std": 0.0,
+        "nmse_mean": 0.24345315849645519,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -6.135845866605663,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.2592578125,
+        "ber_std": 0.0
+      },
+      "20": {
+        "trials": [
+          {
+            "mse": 0.0033679972567914936,
+            "nmse": 0.003330057590292333,
+            "nmse_db": -24.77548255703921,
+            "ber": 0.008681640625
+          }
+        ],
+        "mse_mean": 0.0033679972567914936,
+        "mse_std": 0.0,
+        "nmse_mean": 0.003330057590292333,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -24.77548255703921,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.008681640625,
+        "ber_std": 0.0
+      }
+    },
+    "ML": {
+      "0": {
+        "trials": [
+          {
+            "mse": 0.3109834303381,
+            "nmse": 0.3094138364658721,
+            "nmse_db": -5.09460269284302,
+            "ber": 0.260078125
+          }
+        ],
+        "mse_mean": 0.3109834303381,
+        "mse_std": 0.0,
+        "nmse_mean": 0.3094138364658721,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -5.09460269284302,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.260078125,
+        "ber_std": 0.0
+      },
+      "20": {
+        "trials": [
+          {
+            "mse": 0.0033842748223416284,
+            "nmse": 0.0033461517930421726,
+            "nmse_db": -24.75454361823911,
+            "ber": 0.00869140625
+          }
+        ],
+        "mse_mean": 0.0033842748223416284,
+        "mse_std": 0.0,
+        "nmse_mean": 0.0033461517930421726,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -24.75454361823911,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.00869140625,
+        "ber_std": 0.0
+      }
+    },
+    "CNN(raw)": {
+      "0": {
+        "trials": [
+          {
+            "mse": 1.0067635009595968,
+            "nmse": 1.0016821697125562,
+            "nmse_db": 0.007299432515548832,
+            "ber": 0.497841796875
+          }
+        ],
+        "mse_mean": 1.0067635009595968,
+        "mse_std": 0.0,
+        "nmse_mean": 1.0016821697125562,
+        "nmse_std": 0.0,
+        "nmse_db_mean": 0.007299432515548832,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.497841796875,
+        "ber_std": 0.0
+      },
+      "20": {
+        "trials": [
+          {
+            "mse": 1.0135428128629838,
+            "nmse": 1.0021255006234615,
+            "nmse_db": 0.009221135623637241,
+            "ber": 0.4990625
+          }
+        ],
+        "mse_mean": 1.0135428128629838,
+        "mse_std": 0.0,
+        "nmse_mean": 1.0021255006234615,
+        "nmse_std": 0.0,
+        "nmse_db_mean": 0.009221135623637241,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.4990625,
+        "ber_std": 0.0
+      }
+    },
+    "GRU(raw)": {
+      "0": {
+        "trials": [
+          {
+            "mse": 1.0126080938446016,
+            "nmse": 1.0074972638002522,
+            "nmse_db": 0.032438753411217464,
+            "ber": 0.506953125
+          }
+        ],
+        "mse_mean": 1.0126080938446016,
+        "mse_std": 0.0,
+        "nmse_mean": 1.0074972638002522,
+        "nmse_std": 0.0,
+        "nmse_db_mean": 0.032438753411217464,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.506953125,
+        "ber_std": 0.0
+      },
+      "20": {
+        "trials": [
+          {
+            "mse": 1.0171385949552583,
+            "nmse": 1.0056807771086993,
+            "nmse_db": 0.02460148969533152,
+            "ber": 0.5044140625
+          }
+        ],
+        "mse_mean": 1.0171385949552583,
+        "mse_std": 0.0,
+        "nmse_mean": 1.0056807771086993,
+        "nmse_std": 0.0,
+        "nmse_db_mean": 0.02460148969533152,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.5044140625,
+        "ber_std": 0.0
+      }
+    },
+    "CNN(ls_refine)": {
+      "0": {
+        "trials": [
+          {
+            "mse": 0.4339918332690944,
+            "nmse": 0.43180139205698376,
+            "nmse_db": -3.64715961905234,
+            "ber": 0.2901953125
+          }
+        ],
+        "mse_mean": 0.4339918332690944,
+        "mse_std": 0.0,
+        "nmse_mean": 0.43180139205698376,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -3.64715961905234,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.2901953125,
+        "ber_std": 0.0
+      },
+      "20": {
+        "trials": [
+          {
+            "mse": 0.32701466720274636,
+            "nmse": 0.3233309268466673,
+            "nmse_db": -4.903527528073427,
+            "ber": 0.163525390625
+          }
+        ],
+        "mse_mean": 0.32701466720274636,
+        "mse_std": 0.0,
+        "nmse_mean": 0.3233309268466673,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -4.903527528073427,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.163525390625,
+        "ber_std": 0.0
+      }
+    },
+    "GRU(ls_refine)": {
+      "0": {
+        "trials": [
+          {
+            "mse": 0.9643085756610674,
+            "nmse": 0.9594415226812709,
+            "nmse_db": -0.1798149007991237,
+            "ber": 0.455927734375
+          }
+        ],
+        "mse_mean": 0.9643085756610674,
+        "mse_std": 0.0,
+        "nmse_mean": 0.9594415226812709,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -0.1798149007991237,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.455927734375,
+        "ber_std": 0.0
+      },
+      "20": {
+        "trials": [
+          {
+            "mse": 0.952662245676071,
+            "nmse": 0.9419307381564587,
+            "nmse_db": -0.2598103047925495,
+            "ber": 0.4503125
+          }
+        ],
+        "mse_mean": 0.952662245676071,
+        "mse_std": 0.0,
+        "nmse_mean": 0.9419307381564587,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -0.2598103047925495,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.4503125,
+        "ber_std": 0.0
+      }
+    }
+  }
+}

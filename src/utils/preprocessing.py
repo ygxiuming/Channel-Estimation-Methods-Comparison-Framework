@@ -1,217 +1,114 @@
 """
 信道数据预处理模块
-用于数据归一化和异常值处理
+
+设计原则：
+1. 归一化使用全局统一标量缩放，H/Y 共用同一因子，
+   严格保持 Y = H·X + N 的线性关系；
+2. 不提供逐元素"异常值替换"——瑞利衰落信道的重尾是物理特性，
+   逐元素裁剪会逐样本破坏信道模型与接收信号的对应关系；
+3. 数据增强以 (H, X, Y) 三元组为单位同步变换，保证物理一致性。
 """
 
 import numpy as np
-from typing import Optional, Union, List, Tuple
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from typing import Optional, List, Tuple
+
 
 class ChannelPreprocessor:
-    """信道数据预处理器"""
-    
-    def __init__(self, normalization: str = 'z-score',
-                 remove_outliers: bool = False,
-                 outlier_threshold: float = 3.0):
+    """
+    信道数据预处理器（全局功率缩放）
+
+    对复数数据做单一标量缩放: data / scale。
+    H 与 Y 使用同一 scale 时，线性关系 Y = H·X + N 精确保持。
+    """
+
+    def __init__(self, normalization: str = 'power'):
         """
-        初始化预处理器
-        
         参数:
-            normalization: 归一化方法，'z-score' 或 'min-max'
-            remove_outliers: 是否移除异常值
-            outlier_threshold: 异常值阈值（标准差的倍数）
+            normalization: 'power'（按RMS功率缩放）或 'none'（不缩放）
         """
         self.normalization = normalization.lower()
-        self.remove_outliers = remove_outliers
-        self.outlier_threshold = outlier_threshold
-        
-        if self.normalization not in ['z-score', 'min-max']:
-            raise ValueError("归一化方法必须是 'z-score' 或 'min-max'")
-        
-        # 存储归一化参数
-        self.mean_real = None
-        self.std_real = None
-        self.mean_imag = None
-        self.std_imag = None
-        self.min_real = None
-        self.max_real = None
-        self.min_imag = None
-        self.max_imag = None
-    
-    def _remove_outliers(self, data: np.ndarray) -> np.ndarray:
-        """
-        移除异常值
-        
-        参数:
-            data: 输入数据
-        
-        返回:
-            处理后的数据
-        """
-        if not self.remove_outliers:
-            return data
-        
-        # 分别处理实部和虚部
-        real_part = np.real(data)
-        imag_part = np.imag(data)
-        
-        # 计算均值和标准差
-        mean_real = np.mean(real_part)
-        std_real = np.std(real_part)
-        mean_imag = np.mean(imag_part)
-        std_imag = np.std(imag_part)
-        
-        # 创建掩码
-        real_mask = np.abs(real_part - mean_real) <= self.outlier_threshold * std_real
-        imag_mask = np.abs(imag_part - mean_imag) <= self.outlier_threshold * std_imag
-        mask = real_mask & imag_mask
-        
-        # 将异常值替换为均值
-        real_part[~real_mask] = mean_real
-        imag_part[~imag_mask] = mean_imag
-        
-        return real_part + 1j * imag_part
-    
+        if self.normalization not in ['power', 'none']:
+            raise ValueError("归一化方法必须是 'power' 或 'none'")
+        self.scale: Optional[float] = None
+
     def fit(self, data: np.ndarray) -> None:
-        """
-        计算归一化参数
-        
-        参数:
-            data: 输入数据
-        """
-        # 首先移除异常值
-        data = self._remove_outliers(data)
-        
-        # 分离实部和虚部
-        real_part = np.real(data)
-        imag_part = np.imag(data)
-        
-        if self.normalization == 'z-score':
-            self.mean_real = np.mean(real_part)
-            self.std_real = np.std(real_part)
-            self.mean_imag = np.mean(imag_part)
-            self.std_imag = np.std(imag_part)
-        else:  # min-max归一化
-            self.min_real = np.min(real_part)
-            self.max_real = np.max(real_part)
-            self.min_imag = np.min(imag_part)
-            self.max_imag = np.max(imag_part)
-    
+        """根据参考数据计算缩放因子（复数RMS）"""
+        if self.normalization == 'power':
+            rms = float(np.sqrt(np.mean(np.abs(data) ** 2)))
+            self.scale = rms if rms > 0 else 1.0
+        else:
+            self.scale = 1.0
+
     def transform(self, data: np.ndarray) -> np.ndarray:
-        """
-        应用归一化
-        
-        参数:
-            data: 输入数据
-        
-        返回:
-            归一化后的数据
-        """
-        # 首先移除异常值
-        data = self._remove_outliers(data)
-        
-        # 分离实部和虚部
-        real_part = np.real(data)
-        imag_part = np.imag(data)
-        
-        if self.normalization == 'z-score':
-            if self.mean_real is None or self.std_real is None:
-                raise ValueError("请先调用fit方法计算归一化参数")
-            
-            real_norm = (real_part - self.mean_real) / self.std_real
-            imag_norm = (imag_part - self.mean_imag) / self.std_imag
-        else:  # min-max归一化
-            if self.min_real is None or self.max_real is None:
-                raise ValueError("请先调用fit方法计算归一化参数")
-            
-            real_norm = (real_part - self.min_real) / (self.max_real - self.min_real)
-            imag_norm = (imag_part - self.min_imag) / (self.max_imag - self.min_imag)
-        
-        return real_norm + 1j * imag_norm
-    
+        """应用缩放"""
+        if self.scale is None:
+            raise ValueError("请先调用fit方法计算缩放参数")
+        return data / self.scale
+
     def fit_transform(self, data: np.ndarray) -> np.ndarray:
-        """
-        计算归一化参数并应用归一化
-        
-        参数:
-            data: 输入数据
-        
-        返回:
-            归一化后的数据
-        """
+        """计算缩放参数并应用"""
         self.fit(data)
         return self.transform(data)
-    
-    def inverse_transform(self, data: np.ndarray) -> np.ndarray:
-        """
-        反归一化
-        
-        参数:
-            data: 归一化后的数据
-        
-        返回:
-            原始尺度的数据
-        """
-        real_part = np.real(data)
-        imag_part = np.imag(data)
-        
-        if self.normalization == 'z-score':
-            if self.mean_real is None or self.std_real is None:
-                raise ValueError("请先调用fit方法计算归一化参数")
-            
-            real_orig = real_part * self.std_real + self.mean_real
-            imag_orig = imag_part * self.std_imag + self.mean_imag
-        else:  # min-max归一化
-            if self.min_real is None or self.max_real is None:
-                raise ValueError("请先调用fit方法计算归一化参数")
-            
-            real_orig = real_part * (self.max_real - self.min_real) + self.min_real
-            imag_orig = imag_part * (self.max_imag - self.min_imag) + self.min_imag
-        
-        return real_orig + 1j * imag_orig
 
-def augment_data(data: np.ndarray,
-                 methods: Optional[List[str]] = None,
-                 noise_std: float = 0.01,
-                 phase_shift_range: Tuple[float, float] = (-0.1, 0.1),
-                 magnitude_scale_range: Tuple[float, float] = (0.9, 1.1)) -> np.ndarray:
+    def inverse_transform(self, data: np.ndarray) -> np.ndarray:
+        """反缩放，恢复原始量纲"""
+        if self.scale is None:
+            raise ValueError("请先调用fit方法计算缩放参数")
+        return data * self.scale
+
+
+def augment_triplets(H: np.ndarray, X: np.ndarray, Y: np.ndarray,
+                     methods: Optional[List[str]] = None,
+                     phase_shift_range: Tuple[float, float] = (-np.pi, np.pi),
+                     magnitude_scale_range: Tuple[float, float] = (0.8, 1.25)
+                     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    数据增强
-    
+    物理一致的数据增强：对 (H, X, Y) 三元组做同步变换。
+
+    所有变换均为逐样本的公共标量变换，保证变换后仍满足 Y' = H'·X + N'
+    （N' 与 N 统计同分布）：
+
+    - 'phase_shift':     H -> H·e^{jφ},  Y -> Y·e^{jφ}  （逐样本公共相位 φ）
+    - 'magnitude_scale': H -> H·s,       Y -> Y·s       （逐样本公共实数增益 s）
+
+    注意：逐元素独立的相位/幅度扰动对MIMO相干信道没有物理意义，已移除；
+    对 H 单独加噪而不更新 Y 会破坏真值对应关系，同样已移除。
+
     参数:
-        data: 输入数据
-        methods: 增强方法列表，可选['noise', 'phase_shift', 'magnitude_scale']
-        noise_std: 高斯噪声标准差
+        H: 信道矩阵 (n_samples, n_rx, n_tx)
+        X: 导频符号 (n_samples, n_tx, n_pilot)
+        Y: 接收信号 (n_samples, n_rx, n_pilot)
+        methods: 增强方法列表，可选 ['phase_shift', 'magnitude_scale']
         phase_shift_range: 相位偏移范围（弧度）
         magnitude_scale_range: 幅度缩放范围
-    
+
     返回:
-        增强后的数据
+        (H_aug, X, Y_aug) 增强后的三元组（X不变）
     """
     if methods is None:
-        methods = ['noise', 'phase_shift', 'magnitude_scale']
-    
-    augmented_data = data.copy()
-    
+        methods = ['phase_shift', 'magnitude_scale']
+
+    H_aug = H.copy()
+    Y_aug = Y.copy()
+    n_samples = H.shape[0]
+    sample_shape = (n_samples,) + (1,) * (H.ndim - 1)
+
     for method in methods:
-        if method == 'noise':
-            # 添加复高斯噪声
-            noise = (np.random.normal(0, noise_std, data.shape) +
-                    1j * np.random.normal(0, noise_std, data.shape))
-            augmented_data += noise
-        
-        elif method == 'phase_shift':
-            # 随机相位偏移
-            phase_shift = np.random.uniform(phase_shift_range[0],
-                                         phase_shift_range[1],
-                                         data.shape)
-            augmented_data *= np.exp(1j * phase_shift)
-        
+        if method == 'phase_shift':
+            phase = np.random.uniform(phase_shift_range[0],
+                                      phase_shift_range[1],
+                                      sample_shape)
+            rot = np.exp(1j * phase)
+            H_aug = H_aug * rot
+            Y_aug = Y_aug * rot
         elif method == 'magnitude_scale':
-            # 随机幅度缩放
             scale = np.random.uniform(magnitude_scale_range[0],
-                                    magnitude_scale_range[1],
-                                    data.shape)
-            augmented_data *= scale
-    
-    return augmented_data 
+                                      magnitude_scale_range[1],
+                                      sample_shape)
+            H_aug = H_aug * scale
+            Y_aug = Y_aug * scale
+        else:
+            raise ValueError(f"未知的增强方法: {method}，"
+                             f"可选 ['phase_shift', 'magnitude_scale']")
+
+    return H_aug, X, Y_aug

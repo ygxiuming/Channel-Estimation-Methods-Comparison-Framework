@@ -1,278 +1,187 @@
 """
 传统信道估计方法模块
-包含LS、LMMSE和ML估计器
+包含LS、LMMSE和ML估计器，以及统一的复数域性能指标计算
+
+系统模型: Y = H·X + N
+    Y: (n_samples, n_rx, n_pilot)  接收信号
+    X: (n_samples, n_tx, n_pilot)  导频符号
+    H: (n_samples, n_rx, n_tx)     信道矩阵
+    N: 复高斯白噪声，每元素方差 noise_var
 """
 
 import numpy as np
-from scipy.special import erf
-from typing import Dict, Union, Optional
+from typing import Dict, Optional
+
 
 class LSEstimator:
-    """最小二乘(LS)估计器"""
-    
+    """最小二乘(LS)估计器: H_ls = Y·Xᴴ·(X·Xᴴ)⁻¹"""
+
     def __init__(self, regularization: bool = False, lambda_: float = 0.01):
         """
-        初始化LS估计器
-        
         参数:
-            regularization: 是否使用正则化
+            regularization: 是否使用对角加载正则化
             lambda_: 正则化参数
         """
         self.regularization = regularization
         self.lambda_ = lambda_
-    
+
     def estimate(self, Y: np.ndarray, X: np.ndarray) -> np.ndarray:
         """
-        执行LS估计
-        
+        执行LS估计（批量向量化）
+
         参数:
             Y: 接收信号，shape=(n_samples, n_rx, n_pilot)
             X: 导频符号，shape=(n_samples, n_tx, n_pilot)
-        
+
         返回:
             H_est: 估计的信道矩阵，shape=(n_samples, n_rx, n_tx)
         """
-        # 转置X以便进行批量矩阵运算
-        X_H = np.conjugate(np.transpose(X, (0, 2, 1)))  # (n_samples, n_pilot, n_tx)
-        
-        # 计算XX^H
-        XX_H = np.matmul(X, X_H)  # (n_samples, n_tx, n_tx)
-        
+        X_H = np.conjugate(np.transpose(X, (0, 2, 1)))  # (n, n_pilot, n_tx)
+        XX_H = np.matmul(X, X_H)                        # (n, n_tx, n_tx)
+
         if self.regularization:
-            # 添加正则化项
             n_tx = X.shape[1]
-            reg_term = self.lambda_ * np.eye(n_tx)[np.newaxis, :, :]
-            XX_H = XX_H + reg_term
-        
-        # 使用SVD进行稳定的矩阵求逆
-        H_est_list = []
-        for i in range(Y.shape[0]):
-            try:
-                # 尝试直接求逆
-                XX_H_inv = np.linalg.inv(XX_H[i])
-            except np.linalg.LinAlgError:
-                # 如果矩阵接近奇异，使用伪逆
-                XX_H_inv = np.linalg.pinv(XX_H[i])
-            
-            # 计算信道估计
-            H_est_i = np.matmul(Y[i], np.matmul(X_H[i], XX_H_inv))
-            H_est_list.append(H_est_i)
-        
-        H_est = np.stack(H_est_list, axis=0)
+            XX_H = XX_H + self.lambda_ * np.eye(n_tx)[np.newaxis, :, :]
+
+        # H = Y·Xᴴ·(XXᴴ)⁻¹ = ( (XXᴴ)⁻¹·X·Yᴴ )ᴴ  （XXᴴ为Hermitian）
+        # 用批量 solve 避免显式求逆，提高数值稳定性
+        Y_H = np.conjugate(np.transpose(Y, (0, 2, 1)))  # (n, n_pilot, n_rx)
+        M = np.matmul(X, Y_H)                           # (n, n_tx, n_rx)
+        try:
+            S = np.linalg.solve(XX_H, M)                # (n, n_tx, n_rx)
+        except np.linalg.LinAlgError:
+            # 批量求解失败时回退到逐样本伪逆
+            S = np.stack([np.linalg.pinv(XX_H[i]) @ M[i]
+                          for i in range(Y.shape[0])], axis=0)
+
+        H_est = np.conjugate(np.transpose(S, (0, 2, 1)))  # (n, n_rx, n_tx)
         return H_est
+
 
 class LMMSEEstimator:
-    """线性最小均方误差(LMMSE)估计器"""
-    
-    def __init__(self, snr: float, adaptive_snr: bool = False,
-                 correlation_method: str = 'sample'):
+    """
+    线性最小均方误差(LMMSE)估计器
+
+    基于LS估计 h_ls = h + ñ，其中 ñ 的协方差（每个接收天线行）为
+    noise_var·(X·Xᴴ)⁻¹。逐接收天线行的LMMSE滤波：
+
+        ĥ = R_h · (R_h + noise_var·(X·Xᴴ)⁻¹)⁻¹ · h_ls
+
+    其中 R_h 为单行信道向量（长度 n_tx）的相关矩阵。
+    各接收天线行独立同分布时，行滤波即为全局最优线性估计。
+    """
+
+    def __init__(self, noise_var: float,
+                 correlation_method: str = 'theoretical',
+                 channel_cov: Optional[np.ndarray] = None):
         """
-        初始化LMMSE估计器
-        
         参数:
-            snr: 信噪比（线性，非dB）
-            adaptive_snr: 是否使用自适应SNR估计
-            correlation_method: 信道相关矩阵估计方法，'sample' 或 'theoretical'
+            noise_var: 噪声方差（复数每元素），应来自数据生成器
+            correlation_method: 信道相关矩阵估计方法，
+                'theoretical' —— 独立衰落信道 R_h = E|h|²·I（无数据泄漏，默认）
+                'sample'      —— 使用外部提供的样本相关矩阵 channel_cov
+            channel_cov: 样本相关矩阵 (n_tx, n_tx)，
+                仅 correlation_method='sample' 时需要；
+                注意：必须只在训练集上估计，避免测试集数据泄漏
         """
-        self.snr = snr
-        self.adaptive_snr = adaptive_snr
+        self.noise_var = float(noise_var)
         self.correlation_method = correlation_method
-        
+        self.channel_cov = channel_cov
+
         if correlation_method not in ['sample', 'theoretical']:
             raise ValueError("correlation_method必须是'sample'或'theoretical'")
-    
-    def _estimate_correlation(self, H_ls: np.ndarray) -> np.ndarray:
-        """
-        估计信道相关矩阵
-        
-        参数:
-            H_ls: LS估计的信道矩阵
-        
-        返回:
-            R_H: 信道相关矩阵
-        """
-        if self.correlation_method == 'sample':
-            # 使用样本相关矩阵
-            H_ls_flat = H_ls.reshape(H_ls.shape[0], -1)
-            R_H = np.matmul(H_ls_flat.T.conj(), H_ls_flat) / H_ls.shape[0]
-            # 添加小的正则化项以提高数值稳定性
-            epsilon = 1e-10
-            R_H = R_H + epsilon * np.eye(R_H.shape[0])
-        else:
-            # 使用理论相关矩阵（假设指数衰减）
-            n_rx, n_tx = H_ls.shape[1:3]
-            R_H = np.zeros((n_rx * n_tx, n_rx * n_tx), dtype=complex)
-            rho = 0.7  # 相关系数
-            for i in range(n_rx * n_tx):
-                for j in range(n_rx * n_tx):
-                    R_H[i, j] = rho ** abs(i - j)
-        
-        return R_H
-    
+        if correlation_method == 'sample' and channel_cov is None:
+            raise ValueError("correlation_method='sample'时必须提供channel_cov")
+
     def estimate(self, Y: np.ndarray, X: np.ndarray) -> np.ndarray:
         """
-        执行LMMSE估计
-        
+        执行LMMSE估计（批量向量化）
+
         参数:
             Y: 接收信号，shape=(n_samples, n_rx, n_pilot)
             X: 导频符号，shape=(n_samples, n_tx, n_pilot)
-        
+
         返回:
             H_est: 估计的信道矩阵，shape=(n_samples, n_rx, n_tx)
         """
-        # 首先进行LS估计
-        ls_estimator = LSEstimator(regularization=True, lambda_=0.01)  # 使用正则化的LS估计
-        H_ls = ls_estimator.estimate(Y, X)
-        
-        # 估计信道相关矩阵
-        R_H = self._estimate_correlation(H_ls)
-        
-        if self.adaptive_snr:
-            # 使用样本方差估计噪声功率
-            error = Y - np.matmul(H_ls, X)
-            noise_power = np.mean(np.abs(error) ** 2)
-            signal_power = np.mean(np.abs(Y) ** 2)
-            snr = max(signal_power / noise_power, 1.0)  # 确保SNR不小于1
+        n_samples, n_rx, _ = Y.shape
+        n_tx = X.shape[1]
+
+        # LS估计（无正则化，LMMSE本身提供正则）
+        H_ls = LSEstimator(regularization=False).estimate(Y, X)
+
+        # 信道相关矩阵 R_h (n_tx, n_tx)
+        if self.correlation_method == 'theoretical':
+            R_h = np.eye(n_tx, dtype=complex)  # E|h|² = 1 的独立衰落
         else:
-            snr = self.snr
-        
-        # LMMSE估计
-        n_samples = Y.shape[0]
-        H_est = np.zeros_like(H_ls)
-        
-        for i in range(n_samples):
-            h_ls = H_ls[i].flatten()
-            # 使用更稳定的求解方法
-            try:
-                # 使用Cholesky分解求解线性方程组
-                A = R_H + np.eye(len(h_ls)) / snr
-                L = np.linalg.cholesky(A)
-                h_est = h_ls.copy()
-                # 解线性方程组 A @ x = R_H @ h_ls
-                y = np.linalg.solve(L, R_H @ h_ls)
-                h_est = np.linalg.solve(L.T.conj(), y)
-            except np.linalg.LinAlgError:
-                # 如果Cholesky分解失败，使用伪逆
-                h_est = np.matmul(R_H, np.linalg.pinv(R_H + np.eye(len(h_ls)) / snr)) @ h_ls
-            
-            H_est[i] = h_est.reshape(H_ls.shape[1:])
-        
+            R_h = self.channel_cov + 1e-10 * np.eye(n_tx)  # 数值稳定
+
+        # 每个样本的 LS 噪声协方差: noise_var·(X·Xᴴ)⁻¹
+        X_H = np.conjugate(np.transpose(X, (0, 2, 1)))
+        XX_H = np.matmul(X, X_H)                            # (n, n_tx, n_tx)
+        XX_H_inv = np.linalg.inv(XX_H)                      # (n, n_tx, n_tx)
+
+        # A = R_h + noise_var·(XXᴴ)⁻¹
+        A = R_h[np.newaxis, :, :] + self.noise_var * XX_H_inv  # (n, n_tx, n_tx)
+
+        # 逐样本滤波矩阵 M = R_h·A⁻¹，则列向量形式 ĥ = M·h_ls。
+        # 注意：信道行向量转为列向量是普通转置（不带共轭），
+        # 因此批量行向量形式为 H_est = H_ls @ M.T（普通转置）。
+        # 用普通转置的批量solve避免显式求逆：
+        # M = R_h·A⁻¹ = ( A⁻ᵀ·R_hᵀ )ᵀ = solve(Aᵀ, R_hᵀ)ᵀ
+        A_T = np.transpose(A, (0, 2, 1))
+        R_h_T = np.broadcast_to(np.transpose(R_h), (n_samples, n_tx, n_tx))
+        M = np.transpose(np.linalg.solve(A_T, R_h_T), (0, 2, 1))
+        H_est = np.matmul(H_ls, np.transpose(M, (0, 2, 1)))
+
         return H_est
 
+
 class MLEstimator:
-    """最大似然(ML)估计器"""
-    
-    def __init__(self, max_iter: int = 100, tol: float = 1e-6, learning_rate: float = 0.01):
-        """
-        初始化ML估计器
-        
-        参数:
-            max_iter: 最大迭代次数
-            tol: 收敛阈值
-            learning_rate: 初始学习率
-        """
-        self.max_iter = max_iter
-        self.tol = float(tol)
-        self.learning_rate = learning_rate
-        self.min_lr = 1e-6  # 最小学习率
-        self.lr_decay = 0.95  # 学习率衰减因子
-    
-    def _calculate_loss(self, H_est: np.ndarray, X: np.ndarray, Y: np.ndarray) -> float:
-        """计算损失函数（负对数似然）"""
-        error = Y - np.matmul(H_est, X)
-        return np.mean(np.abs(error) ** 2)
-    
+    """
+    最大似然(ML)估计器
+
+    在线性高斯模型 Y = H·X + N、X 已知的条件下，ML解具有闭式形式，
+    与无正则化的LS解严格等价：H_ml = Y·Xᴴ·(X·Xᴴ)⁻¹。
+    因此本实现直接使用闭式解（原迭代实现在数学上冗余且收敛行为依赖
+    人为的梯度缩放常数，已移除）。
+    """
+
+    def __init__(self):
+        pass
+
     def estimate(self, Y: np.ndarray, X: np.ndarray) -> np.ndarray:
         """
-        执行ML估计
-        
+        执行ML估计（闭式解，等价于无正则LS）
+
         参数:
             Y: 接收信号，shape=(n_samples, n_rx, n_pilot)
             X: 导频符号，shape=(n_samples, n_tx, n_pilot)
-        
+
         返回:
             H_est: 估计的信道矩阵，shape=(n_samples, n_rx, n_tx)
         """
-        # 使用正则化的LS估计作为初始值
-        ls_estimator = LSEstimator(regularization=True, lambda_=0.01)
-        H_est = ls_estimator.estimate(Y, X)
-        
-        # 迭代优化
-        X_H = np.conjugate(np.transpose(X, (0, 2, 1)))  # (n_samples, n_pilot, n_tx)
-        lr = self.learning_rate
-        best_H = H_est.copy()
-        best_loss = self._calculate_loss(H_est, X, Y)
-        
-        for iter_idx in range(self.max_iter):
-            H_prev = H_est.copy()
-            prev_loss = self._calculate_loss(H_prev, X, Y)
-            
-            # 计算误差
-            error = Y - np.matmul(H_est, X)  # (n_samples, n_rx, n_pilot)
-            
-            # 计算梯度
-            gradient = -np.matmul(error, X_H)  # 负梯度方向
-            
-            # 梯度缩放
-            grad_norm = np.maximum(np.sqrt(np.mean(np.abs(gradient) ** 2)), 1e-8)
-            gradient = gradient / grad_norm
-            
-            # 更新估计
-            H_est = H_est - lr * gradient
-            
-            # 计算当前损失
-            current_loss = self._calculate_loss(H_est, X, Y)
-            
-            # 如果损失增加，回退并降低学习率
-            if current_loss > prev_loss:
-                H_est = H_prev
-                lr = max(lr * self.lr_decay, self.min_lr)
-                continue
-            
-            # 更新最佳结果
-            if current_loss < best_loss:
-                best_H = H_est.copy()
-                best_loss = current_loss
-            
-            # 检查收敛
-            diff = float(np.mean(np.abs(H_est - H_prev) ** 2))
-            if diff < self.tol:
-                break
-            
-            # 定期降低学习率
-            if iter_idx > 0 and iter_idx % 10 == 0:
-                lr = max(lr * self.lr_decay, self.min_lr)
-        
-        return best_H
+        return LSEstimator(regularization=False).estimate(Y, X)
+
 
 def calculate_performance_metrics(H_true: np.ndarray, H_est: np.ndarray) -> Dict[str, float]:
     """
-    计算性能指标
-    
+    计算性能指标（统一在复数域计算，传统方法与深度学习方法口径一致）
+
     参数:
-        H_true: 真实信道矩阵
-        H_est: 估计的信道矩阵
-    
+        H_true: 真实信道矩阵（复数）
+        H_est: 估计的信道矩阵（复数）
+
     返回:
-        包含各种性能指标的字典
+        包含 'mse'、'nmse'、'nmse_db' 的字典；
+        BER由 utils.ber.simulate_qpsk_ber 单独仿真（真实调制解调），不在此计算
     """
-    # 计算MSE
-    mse = np.mean(np.abs(H_true - H_est) ** 2)
-    
-    # 计算NMSE
-    nmse = mse / np.mean(np.abs(H_true) ** 2)
-    
-    # 计算BER（假设QPSK调制）
-    def qpsk_ber(h_true, h_est):
-        # 添加小的常数以避免除零
-        epsilon = 1e-10
-        snr_eff = np.abs(h_true) ** 2 / (np.abs(h_true - h_est) ** 2 + epsilon)
-        return 0.5 * np.mean(1 - erf(np.sqrt(snr_eff/2)))
-    
-    ber = qpsk_ber(H_true, H_est)
-    
+    mse = float(np.mean(np.abs(H_true - H_est) ** 2))
+    signal_power = float(np.mean(np.abs(H_true) ** 2))
+    nmse = mse / signal_power if signal_power > 0 else float('inf')
+
     return {
-        'mse': float(mse),
+        'mse': mse,
         'nmse': float(nmse),
-        'ber': float(ber)
-    } 
+        'nmse_db': float(10 * np.log10(nmse)) if nmse > 0 else -float('inf')
+    }

@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 实验产物
+#results/
+#results_*/
+#plots/
+#plots_*/
+#runs/
+
+# IDE / 工具
+.idea/
+.zcode/
+venv/

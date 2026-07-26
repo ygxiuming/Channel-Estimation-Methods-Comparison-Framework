@@ -1,0 +1,71 @@
+# 快速验证（冒烟测试）配置：小规模、少epoch，用于验证全流程无报错
+
+experiment:
+  name: 'smoke_test'
+  description: '全流程冒烟验证'
+  seed: 42
+  use_cuda: false
+  save_dir: 'results_smoke'
+  plot_dir: 'plots_smoke'
+
+channel:
+  n_tx: 4
+  n_rx: 4
+  n_pilot: 16
+  snr_list: [0, 20]
+  n_samples: 512
+  type: 'rayleigh'
+  rician_k: 1.0
+
+data:
+  augmentation:
+    enabled: false
+    methods: ['phase_shift', 'magnitude_scale']
+    phase_shift_range: [-3.14159, 3.14159]
+    magnitude_scale_range: [0.8, 1.25]
+  split:
+    train_ratio: 0.7
+    val_ratio: 0.15
+  loader:
+    batch_size: 64
+    num_workers: 0
+    pin_memory: false
+
+traditional:
+  ls:
+    regularization: true
+    lambda: 0.01
+  lmmse:
+    correlation_method: 'theoretical'
+
+dl:
+  input_modes: ['raw', 'ls_refine']
+  # 冒烟测试只跑两个最快的模型
+  models: ['CNN', 'GRU']
+
+models:
+  common:
+    learning_rate: 0.001
+    dropout: 0.3
+  rnn:
+    hidden_size: 64
+    num_layers: 1
+  lstm:
+    hidden_size: 64
+    num_layers: 1
+  gru:
+    hidden_size: 64
+    num_layers: 1
+  hybrid:
+    rnn_hidden_size: 64
+
+training:
+  epochs: 3
+  early_stopping:
+    patience: 2
+
+evaluation:
+  n_test: 256
+  n_trials: 1
+  ber_symbols: 50
+  equalizer: 'mmse'

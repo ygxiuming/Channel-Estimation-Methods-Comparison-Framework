@@ -1,257 +1,291 @@
-# 信道估计方法比较研究
+# 信道估计方法对比框架 (Channel Estimation Methods Comparison Framework)
 
-本项目实现了一个完整的信道估计方法比较研究框架，包括传统方法和深度学习方法的实现、评估和性能对比。
+一个基于 PyTorch 的 MIMO 信道估计方法对比实验框架，在系统模型 **Y = H·X + N** 下，
+对传统估计方法（LS / LMMSE / ML）与深度学习方法（CNN / RNN / LSTM / GRU / Hybrid）
+进行**严格公平**的性能对比，并自动生成对比分析图表与实验报告。
 
-## 项目概述
+## ✨ 特性 (Features)
 
-本项目旨在比较不同信道估计方法的性能，包括：
+- **严谨的方法论**
+  - SNR 扫描（默认 0~30 dB）× Monte Carlo 多次重复，报告 **均值 ± 标准差**
+  - 所有方法共用同一份测试数据、同一套指标口径（复数域 MSE/NMSE）
+  - BER 通过**真实 QPSK 调制 → 信道 → AWGN → 均衡 → 判决**链路仿真获得
+  - 评估数据每次独立新生成，LMMSE 协方差仅从训练集估计，**无数据泄漏**
+- **两种 DL 输入模式**（独立成组对比）
+  - `raw`：端到端，输入 `[Re(Y), Im(Y), Re(X), Im(X)]`
+  - `ls_refine`：混合式，输入 LS 估计的实虚部，网络学习 refine
+- **YOLO 风格训练体验**
+  - 逐 epoch 表格输出（训练损失 / 验证损失 / 验证 NMSE(dB) / 学习率）
+  - `weights/best.pt` + `weights/last.pt` 权重保存
+  - `results.csv` 逐轮日志 + `results.png` 自动训练曲线
+  - 早停 (EarlyStopping) + 学习率自适应 (ReduceLROnPlateau)
+- **全中文输出**：控制台、图表、报告均为中文（英文以 `()` 标注），
+  自动探测中文字体解决绘图乱码
+- **自动化报告**：实验结束后自动生成 Markdown 实验报告（结果总表、
+  对比分析、结论、图表引用）
+- **完善测试**：21 项 pytest 合理性测试覆盖核心算法正确性
 
-### 传统方法
-- LS（最小二乘）估计
-- LMMSE（线性最小均方误差）估计
-- ML（最大似然）估计
-
-### 深度学习方法
-- CNN（卷积神经网络）
-- RNN（循环神经网络）
-- LSTM（长短期记忆网络）
-- GRU（门控循环单元）
-- Hybrid（混合CNN-LSTM模型）
-
-## 项目结构
+## 📁 目录结构 (Project Structure)
 
 ```
-project/
-├── src/                    # 源代码目录
-│   ├── main.py            # 主程序入口
-│   ├── config/            # 配置文件目录
-│   │   └── default.yml    # 默认配置文件
-│   ├── traditional/       # 传统方法实现
-│   │   └── estimators.py  # 传统估计器实现
-│   ├── deep_learning/     # 深度学习方法实现
-│   │   └── models.py      # 深度学习模型实现
-│   └── utils/             # 工具函数
-│       ├── config.py      # 配置加载器
-│       ├── data_generator.py  # 数据生成器
-│       ├── preprocessing.py   # 数据预处理
-│       └── trainer.py     # 模型训练器
-├── results/               # 实验结果目录
-│   ├── logs/             # 日志文件
-│   ├── models/           # 保存的模型
-│   └── plots/            # 结果图表
-└── README.md             # 项目说明文档
+├── main.py                     # 主程序入口（仓库根目录）
+├── src/
+│   ├── config/
+│   │   ├── default.yml         # 默认配置（完整实验）
+│   │   └── smoke.yml           # 冒烟配置（小规模快速验证）
+│   ├── traditional/
+│   │   └── estimators.py       # LS / LMMSE / ML 估计器 + 复数域指标
+│   ├── deep_learning/
+│   │   └── models.py           # CNN/RNN/LSTM/GRU/Hybrid（维度参数化）
+│   └── utils/
+│       ├── config.py           # 配置加载器
+│       ├── data_generator.py   # 信道/导频/接收信号生成（含噪声方差）
+│       ├── preprocessing.py    # 全局一致缩放 + 物理一致同步增强
+│       ├── ber.py              # 真实 QPSK 链路 BER 仿真
+│       ├── plotting.py         # 中文字体配置 + CJK 终端对齐
+│       ├── report.py           # 自动对比分析 + Markdown 报告生成
+│       └── trainer.py          # YOLO 风格训练器
+├── tests/
+│   └── test_estimators.py      # 21 项合理性测试
+├── requirements.txt
+└── README.md
 ```
 
-## 功能特性
+## 🚀 快速开始 (Quick Start)
 
-1. **数据处理**
-   - 支持多种信道模型（Rayleigh、Rician等）
-   - 灵活的数据生成和预处理
-   - 数据增强支持
-   - 自动数据集划分（训练/验证/测试）
+### 1. 环境配置
 
-2. **模型实现**
-   - 传统方法的矩阵运算优化
-   - 多种深度学习架构
-   - GPU加速支持
-   - 模型保存和加载
+```bash
+python -m venv venv
+source venv/bin/activate      # Linux / macOS
+.\venv\Scripts\activate       # Windows
 
-3. **训练与评估**
-   - 自动化训练流程
-   - 早停机制
-   - 学习率自适应调整
-   - 多指标性能评估
+pip install -r requirements.txt
+```
 
-4. **可视化与分析**
-   - 训练过程可视化
-   - 性能对比图表
-   - 详细的日志记录
-   - 结果导出和保存
+### 2. 运行实验
 
-## 配置说明
+```bash
+# 冒烟验证（几分钟内跑通全流程，建议先跑这个）
+python main.py --config src/config/smoke.yml --device cpu
 
-### 实验配置
+# 完整实验（默认配置：7 个 SNR × 5 种 DL 模型 × 2 种输入模式）
+python main.py
+
+# 指定配置文件 / 设备 / 随机种子
+python main.py --config src/config/default.yml --device cuda --seed 42
+```
+
+### 3. 运行测试
+
+```bash
+python -m pytest tests/ -q
+```
+
+## 🖥️ 输出示例 (Sample Output)
+
+启动时打印初始化参数面板：
+
+```
+  +------------------------+------------------------------------------+
+  | 配置文件 (Config)      | src/config/default.yml                   |
+  | 信道 (Channel)         | rayleigh  4发×4收, 16 导频               |
+  | SNR扫描 (SNR sweep)    | [0, 5, 10, 15, 20, 25, 30] dB            |
+  | DL输入模式 (DL inputs) | raw, ls_refine                           |
+  | ...                    | ...                                      |
+  +------------------------+------------------------------------------+
+```
+
+训练过程（YOLO 风格，验证集 NMSE(dB) 类比 YOLO 的 mAP）：
+
+```
+模型概况 (Model summary): 参数量 198,305, 设备=cpu, 批大小=128, 学习率=0.001, 轮数=100
+
+轮次(Epoch) 训练损失(train_loss) 验证损失(val_loss) 验证NMSE(dB)   学习率(lr)
+   1/100           0.51600           0.50653         0.01dB    1.00e-03  [2.1s]
+   2/100           0.31244           0.29871        -2.32dB    1.00e-03  [2.0s]
+   ...
+
+早停 (EarlyStopping): 连续 10 轮验证损失无改善，训练提前结束。
+训练完成 (Training completed)，耗时 0.012 小时。
+结果已保存至 (Results saved to): results/channel_estimation_cnn_raw
+```
+
+每个 SNR 评估完成后打印结果表格：
+
+```
+  SNR = 20 dB, 3 次重复 × 2000 测试样本:
+  方法 (Method)              NMSE     NMSE(dB)      误比特率 (BER)
+  --------------------------------------------------------------
+  LS                   3.3239e-03       -24.78       8.6719e-03
+  LMMSE                3.3301e-03       -24.78       8.6816e-03
+  CNN(ls_refine)       3.2333e-01        -4.90       1.6353e-01
+  ...
+```
+
+## 📦 输出产物 (Outputs)
+
+实验完成后，结果目录结构如下：
+
+```
+results/  (或配置中的 save_dir)
+├── REPORT_<时间戳>.md          # 📄 最终实验报告（结果总表/对比分析/结论/图表）
+├── results_<时间戳>.json       # 结构化结果（方法 × SNR × trial）
+├── summary_<时间戳>.csv        # 汇总表（均值±标准差）
+├── logs/experiment_*.log       # 完整实验日志
+└── <实验名>_<模型>_<模式>/      # 每个 DL 模型的独立目录（YOLO 风格）
+    ├── weights/best.pt         # 验证损失最优权重
+    ├── weights/last.pt         # 最后一轮权重
+    ├── results.csv             # 逐 epoch: train_loss/val_loss/val_nmse_db/lr
+    └── results.png             # 训练曲线（损失 + NMSE + 学习率）
+
+plots/  (或配置中的 plot_dir)
+├── nmse_vs_snr_*.png           # NMSE-SNR 曲线（均值±标准差）
+├── ber_vs_snr_*.png            # BER-SNR 曲线（均值±标准差）
+├── nmse_heatmap_*.png          # NMSE 方法×SNR 热力图 (dB)
+└── ber_heatmap_*.png           # BER 方法×SNR 热力图
+```
+
+## 📊 实验结果 (Results)
+
+以下为默认配置（4×4 MIMO Rayleigh 信道、16 导频、训练池 10000 样本、
+每 SNR 点 2000 测试样本 × 3 次 Monte Carlo 重复、种子 42）的一次完整实验结果。
+完整数据（含标准差）见 [results/REPORT_20260726_160023.md](results/REPORT_20260726_160023.md)。
+
+### NMSE-SNR 曲线（均值±标准差）
+
+![NMSE-SNR 曲线](plots/nmse_vs_snr_20260726_160023_v2.png)
+
+### BER-SNR 曲线（真实 QPSK 链路仿真）
+
+![BER-SNR 曲线](plots/ber_vs_snr_20260726_160023_v2.png)
+
+### NMSE / BER 热力图（方法 × SNR）
+
+![NMSE 热力图](plots/nmse_heatmap_20260726_160023_v2.png)
+![BER 热力图](plots/ber_heatmap_20260726_160023_v2.png)
+
+### NMSE 结果（各 3 次重复均值，越小越好）
+
+| 方法 | 0 dB | 5 dB | 10 dB | 15 dB | 20 dB | 25 dB | 30 dB |
+|---|---|---|---|---|---|---|---|
+| **LMMSE** | **2.46e-01** | **9.10e-02** | **3.06e-02** | 9.76e-03 | 3.12e-03 | **9.83e-04** | **3.13e-04** |
+| LS | 3.09e-01 | 9.77e-02 | 3.11e-02 | **9.76e-03** | **3.12e-03** | 9.89e-04 | 3.23e-04 |
+| ML | 3.12e-01 | 9.85e-02 | 3.13e-02 | 9.82e-03 | 3.13e-03 | 9.84e-04 | 3.13e-04 |
+| CNN(raw) | 9.95e-01 | 9.45e-01 | 9.23e-01 | 9.20e-01 | 9.16e-01 | 9.15e-01 | 9.16e-01 |
+| RNN(raw) | 9.38e-01 | 8.93e-01 | 8.70e-01 | 8.61e-01 | 8.59e-01 | 8.58e-01 | 8.56e-01 |
+| LSTM(raw) | 9.98e-01 | 9.87e-01 | 9.85e-01 | 9.82e-01 | 9.81e-01 | 9.81e-01 | 9.81e-01 |
+| GRU(raw) | 1.00e+00 | 9.94e-01 | 9.93e-01 | 9.93e-01 | 9.91e-01 | 9.91e-01 | 9.91e-01 |
+| Hybrid(raw) | 1.05e+00 | 9.58e-01 | 9.24e-01 | 9.02e-01 | 9.03e-01 | 8.99e-01 | 9.05e-01 |
+| CNN(ls_refine) | 2.59e-01 | 9.36e-02 | 3.99e-02 | 2.25e-02 | 1.69e-02 | 1.50e-02 | 1.46e-02 |
+| RNN(ls_refine) | 2.56e-01 | 9.36e-02 | 4.06e-02 | 2.34e-02 | 1.79e-02 | 1.60e-02 | 1.56e-02 |
+| LSTM(ls_refine) | 2.55e-01 | 9.53e-02 | 4.21e-02 | 2.46e-02 | 1.93e-02 | 1.72e-02 | 1.69e-02 |
+| GRU(ls_refine) | 2.55e-01 | 9.50e-02 | 4.14e-02 | 2.37e-02 | 1.84e-02 | 1.62e-02 | 1.59e-02 |
+| Hybrid(ls_refine) | 2.62e-01 | 1.04e-01 | 5.07e-02 | 3.33e-02 | 2.79e-02 | 2.55e-02 | 2.54e-02 |
+
+### BER 结果（真实 QPSK 链路仿真，各 3 次重复均值，越小越好）
+
+| 方法 | 0 dB | 5 dB | 10 dB | 15 dB | 20 dB | 25 dB | 30 dB |
+|---|---|---|---|---|---|---|---|
+| **LMMSE** | **2.58e-01** | **1.50e-01** | **7.07e-02** | **2.70e-02** | **9.20e-03** | **2.94e-03** | **9.96e-04** |
+| LS | 2.59e-01 | 1.51e-01 | 7.09e-02 | 2.71e-02 | 9.20e-03 | 2.94e-03 | 9.94e-04 |
+| ML | 2.59e-01 | 1.51e-01 | 7.09e-02 | 2.71e-02 | 9.21e-03 | 2.94e-03 | 9.96e-04 |
+| RNN(ls_refine) | 2.58e-01 | 1.51e-01 | 7.18e-02 | 2.88e-02 | 1.14e-02 | 5.61e-03 | 4.23e-03 |
+| CNN(ls_refine) | 2.58e-01 | 1.51e-01 | 7.20e-02 | 2.89e-02 | 1.16e-02 | 5.86e-03 | 4.78e-03 |
+| GRU(ls_refine) | 2.58e-01 | 1.51e-01 | 7.21e-02 | 2.91e-02 | 1.18e-02 | 6.04e-03 | 4.91e-03 |
+| LSTM(ls_refine) | 2.58e-01 | 1.51e-01 | 7.22e-02 | 2.92e-02 | 1.20e-02 | 6.36e-03 | 5.44e-03 |
+| Hybrid(ls_refine) | 2.60e-01 | 1.54e-01 | 7.59e-02 | 3.42e-02 | 1.91e-02 | 1.53e-02 | 1.72e-02 |
+| Hybrid(raw) | 4.24e-01 | 3.88e-01 | 3.79e-01 | 3.86e-01 | 4.04e-01 | 4.16e-01 | 4.21e-01 |
+| CNN(raw) | 4.40e-01 | 4.10e-01 | 4.00e-01 | 4.08e-01 | 4.20e-01 | 4.33e-01 | 4.41e-01 |
+| RNN(raw) | 4.38e-01 | 4.13e-01 | 4.13e-01 | 4.30e-01 | 4.48e-01 | 4.63e-01 | 4.72e-01 |
+| LSTM(raw) | 4.74e-01 | 4.61e-01 | 4.60e-01 | 4.64e-01 | 4.73e-01 | 4.82e-01 | 4.87e-01 |
+| GRU(raw) | 4.82e-01 | 4.73e-01 | 4.72e-01 | 4.75e-01 | 4.78e-01 | 4.86e-01 | 4.91e-01 |
+
+### 主要结论 (Key Findings)
+
+1. **传统方法**：LMMSE 在全部 SNR 点不劣于 LS（低 SNR 处增益约 1 dB，
+   高 SNR 趋于一致），符合理论预期；ML 与 LS 基本重合（线性高斯模型下
+   ML 等价于无正则 LS 的闭式解）。
+2. **DL 两种输入模式差异显著**：`ls_refine` 模式（最优 CNN(ls_refine)，
+   30 dB 时 NMSE 1.46e-02）远优于 `raw` 端到端模式（最优 RNN(raw)，
+   NMSE 8.56e-01）——混合式输入把"解线性方程"的难题交给 LS，
+   网络只需学习去噪，显著降低学习难度。
+3. **DL vs 传统**：当前配置下 DL 方法在 0 dB 低 SNR 处已接近 LMMSE
+   （差距仅 0.15 dB），但高 SNR 处仍有差距（30 dB 处约 16.7 dB）。
+   该任务是低维线性逆问题，LMMSE 在已知统计特性下是最优线性估计；
+   DL 的潜力需要更复杂的信道模型（非线性损伤、硬件非理想等）才能发挥。
+4. **方法论保障**：所有方法在相同测试数据、相同指标口径
+   （复数域 NMSE + 真实 QPSK 链路 BER）下评估，每 SNR 点 3 次独立重复，
+   结果具有统计意义。
+
+## ⚙️ 配置详解 (Configuration)
+
+完整配置见 `src/config/default.yml` 注释，核心项：
+
 ```yaml
-experiment:
-  name: "channel_estimation"          # 实验名称
-  seed: 42                           # 随机种子
-  save_dir: "results/models"         # 模型保存目录
-  plot_dir: "results/plots"          # 图表保存目录
-  use_cuda: true                     # 是否使用GPU
-
 channel:
-  n_tx: 4                           # 发射天线数
-  n_rx: 4                           # 接收天线数
-  n_pilot: 16                       # 导频长度
-  snr_db: 10                        # 信噪比(dB)
-  n_samples: 10000                  # 样本数量
-  type: "rayleigh"                  # 信道类型
-  rician_k: 1.0                     # Rician K因子（仅Rician信道）
+  n_tx: 4                        # 发射天线数
+  n_rx: 4                        # 接收天线数
+  n_pilot: 16                    # 导频长度（必须 >= n_tx）
+  snr_list: [0,5,10,15,20,25,30] # SNR 扫描列表 (dB)
+  n_samples: 10000               # 训练池样本数
+  type: 'rayleigh'               # 'rayleigh' 或 'rician'
+  rician_k: 1.0                  # Rician K 因子
 
-data:
-  preprocessing:
-    normalization: "standard"       # 标准化方法
-    remove_outliers: true          # 是否移除异常值
-    outlier_threshold: 3.0         # 异常值阈值
-  
-  augmentation:
-    enabled: true                  # 是否启用数据增强
-    methods: ["noise", "phase"]    # 增强方法
-    noise_std: 0.01               # 噪声标准差
-    phase_shift_range: [-0.1, 0.1] # 相位偏移范围
-  
-  split:
-    train_ratio: 0.7              # 训练集比例
-    val_ratio: 0.15               # 验证集比例
-  
-  loader:
-    batch_size: 128               # 批次大小
-    num_workers: 4                # 数据加载线程数
-    pin_memory: true              # 是否固定内存
+dl:
+  input_modes: ['raw', 'ls_refine']            # 两种 DL 输入模式
+  models: ['CNN','RNN','LSTM','GRU','Hybrid']  # 可裁剪子集以缩短实验时间
 
-models:
-  common:
-    learning_rate: 0.001          # 学习率
-  
-  cnn:
-    channels: [64, 128, 256]      # CNN通道数
-    kernel_size: 3                # 卷积核大小
-    
-  rnn:
-    hidden_size: 256              # 隐藏层大小
-    num_layers: 2                 # 层数
-    
-  lstm:
-    hidden_size: 256
-    num_layers: 2
-    
-  gru:
-    hidden_size: 256
-    num_layers: 2
-    
-  hybrid:
-    rnn_hidden_size: 256         # RNN部分隐藏层大小
-    cnn_channels: [64, 128]      # CNN部分通道数
+evaluation:
+  n_test: 2000                   # 每个 (SNR, trial) 独立生成的测试样本数
+  n_trials: 3                    # Monte Carlo 重复次数
+  ber_symbols: 100               # BER 仿真每样本每天线的 QPSK 符号数
+  equalizer: 'mmse'              # 'zf' 或 'mmse'
 
-training:
-  epochs: 100                    # 训练轮数
-  early_stopping:
-    patience: 10                 # 早停耐心值
-```
-
-### 传统方法参数
-```yaml
 traditional:
   ls:
-    regularization: true         # 是否使用正则化
-    lambda: 0.01                # 正则化参数
-  
+    regularization: true         # 对角加载正则化
+    lambda: 0.01
   lmmse:
-    adaptive_snr: true          # 是否自适应SNR
-    correlation_method: "empirical"  # 相关矩阵计算方法
-  
-  ml:
-    max_iter: 100               # 最大迭代次数
-    tol: 1e-6                  # 收敛阈值
-    learning_rate: 0.01        # 学习率
+    correlation_method: 'theoretical'  # 'theoretical'(R_h=I, 无泄漏)
+                                       # 或 'sample'(仅从训练集估计)
 ```
 
-## 使用说明
+## 📏 指标定义 (Metrics)
 
-1. **环境配置**
-   ```bash
-   # 创建虚拟环境
-   python -m venv venv
-   source venv/bin/activate  # Linux/Mac
-   # 或
-   .\venv\Scripts\activate  # Windows
-   
-   # 安装依赖
-   pip install -r requirements.txt
-   ```
+| 指标 | 定义 | 说明 |
+|---|---|---|
+| MSE | `mean\|H - H_est\|²` | 复数域计算，所有方法口径一致 |
+| NMSE | `MSE / mean\|H\|²` | 归一化均方误差，附 dB 值 |
+| BER | 真实链路仿真 | QPSK 调制 → 真实信道 → AWGN → 用估计信道均衡 → 判决统计误比特 |
 
-2. **运行实验**
-   ```bash
-   # 使用默认配置
-   python src/main.py
-   
-   # 指定配置文件
-   python src/main.py --config path/to/config.yml
-   
-   # 指定设备
-   python src/main.py --device cuda
-   
-   # 设置随机种子
-   python src/main.py --seed 42
-   ```
+BER 仿真中所有方法使用**相同的比特与噪声种子**，保证对比公平。
 
-3. **查看结果**
-   - 实验日志：`results/logs/`
-   - 训练好的模型：`results/models/`
-   - 性能对比图表：`results/plots/`
-   - 实验结果JSON：`results/results_*.json`
+## 🔬 实验方法论 (Methodology)
 
-## 性能指标
+1. **训练池**：信道 H 与导频 X 的分布与 SNR 无关，只生成一次；
+   每个 SNR 生成对应的接收信号 Y，合并构成混合 SNR 训练池（一次训练、逐 SNR 测试）
+2. **评估**：每个 (SNR, trial) 独立生成全新测试数据；传统方法与全部已训练
+   DL 模型在同一份数据上评估
+3. **指标口径**：DL 模型输出先重组为复数信道，再走与传统方法完全相同的
+   复数域指标与 BER 仿真流程
 
-项目使用以下指标评估估计器性能：
+## ❓ 常见问题 (FAQ)
 
-1. **MSE (均方误差)**
-   - 衡量估计值与真实值的平均平方差
-   - 越小越好
+- **完整实验要跑多久？** 7 个 SNR × 5 模型 × 2 输入模式在 CPU 上较慢，
+  建议使用 GPU，或裁剪 `dl.models` / `dl.input_modes` / `channel.snr_list`
+- **图表中文乱码？** 框架会自动探测微软雅黑/苹方/Noto 等中文字体；
+  若系统无任何中文字体，请安装后重试（会有提示）
+- **TensorBoard 不可用？** 在非 ASCII 路径等环境下会自动降级，不影响训练
+- **为什么 DL 暂时不如 LMMSE？** 该任务是低维线性逆问题，LMMSE 是已知
+  统计特性下的最优线性估计；DL 的优势需要更大数据量、更复杂信道模型
+  （如非线性、量化损伤）才能体现
 
-2. **NMSE (归一化均方误差)**
-   - 考虑信道功率归一化后的MSE
-   - 消除信道功率差异的影响
+## 📄 许可证 (License)
 
-3. **BER (误比特率)**
-   - 在给定信道估计下的通信系统误比特率
-   - 实际通信性能的直接指标
+本项目基于 [MIT License](LICENSE) 开源。
 
-## 实验结果
+## 👤 作者 (Author)
 
-实验会生成以下可视化结果：
-
-1. **整体性能对比**
-   - 所有方法的MSE柱状图对比
-   - 直观展示各方法的估计精度
-
-2. **训练过程分析**
-   - 每个深度学习模型的训练损失曲线
-   - 学习率变化曲线
-   - 帮助理解模型训练动态
-
-3. **多维度性能对比**
-   - 传统方法和深度学习方法的雷达图
-   - 从多个指标综合评估性能
-
-4. **误差分布分析**
-   - 各方法MSE的箱线图
-   - 展示估计误差的统计特性
-
-## 注意事项
-
-1. **硬件要求**
-   - 建议使用GPU进行训练
-   - 至少8GB内存
-   - 存储空间：约1GB（取决于实验规模）
-
-2. **数据处理**
-   - 注意数据预处理的标准化方法选择
-   - 合理设置异常值阈值
-   - 根据实际需求调整数据增强参数
-
-3. **训练优化**
-   - 适当调整批次大小和学习率
-   - 注意早停参数的设置
-   - 监控训练过程避免过拟合
-
-4. **结果分析**
-   - 综合考虑多个性能指标
-   - 注意不同信道条件下的表现
-   - 考虑计算复杂度和实时性要求
-
-# 作者信息
-
-- 作者：修明
+- 修明
 - 邮箱：lzmpt@qq.com
-
