@@ -1,0 +1,410 @@
+{
+  "config": {
+    "experiment": {
+      "name": "smoke_test",
+      "description": "全流程冒烟验证",
+      "seed": 42,
+      "use_cuda": false,
+      "save_dir": "results_smoke",
+      "plot_dir": "plots_smoke"
+    },
+    "channel": {
+      "n_tx": 4,
+      "n_rx": 4,
+      "n_pilot": 16,
+      "snr_list": [
+        0,
+        20
+      ],
+      "n_samples": 512,
+      "type": "rayleigh",
+      "rician_k": 1.0
+    },
+    "data": {
+      "augmentation": {
+        "enabled": false,
+        "methods": [
+          "phase_shift",
+          "magnitude_scale"
+        ],
+        "phase_shift_range": [
+          -3.14159,
+          3.14159
+        ],
+        "magnitude_scale_range": [
+          0.8,
+          1.25
+        ]
+      },
+      "split": {
+        "train_ratio": 0.7,
+        "val_ratio": 0.15
+      },
+      "loader": {
+        "batch_size": 64,
+        "num_workers": 0,
+        "pin_memory": false
+      }
+    },
+    "traditional": {
+      "ls": {
+        "regularization": true,
+        "lambda": 0.01
+      },
+      "lmmse": {
+        "correlation_method": "theoretical",
+        "noise_var_estimation": "oracle"
+      }
+    },
+    "dl": {
+      "input_modes": [
+        "raw_sym",
+        "ls_refine_x"
+      ],
+      "models": [
+        "CNN",
+        "GRU",
+        "LmmseNet"
+      ]
+    },
+    "models": {
+      "common": {
+        "learning_rate": 0.001,
+        "dropout": 0.3
+      },
+      "rnn": {
+        "hidden_size": 64,
+        "num_layers": 1
+      },
+      "lstm": {
+        "hidden_size": 64,
+        "num_layers": 1
+      },
+      "gru": {
+        "hidden_size": 64,
+        "num_layers": 1
+      },
+      "hybrid": {
+        "rnn_hidden_size": 64
+      }
+    },
+    "training": {
+      "epochs": 3,
+      "early_stopping": {
+        "patience": 2
+      }
+    },
+    "evaluation": {
+      "n_test": 256,
+      "n_trials": 1,
+      "ber_symbols": 50,
+      "equalizer": "mmse"
+    }
+  },
+  "results": {
+    "LS": {
+      "0": {
+        "trials": [
+          {
+            "mse": 0.3085464510597762,
+            "nmse": 0.3069891570960606,
+            "nmse_db": -5.128769635993908,
+            "ber": 0.26
+          }
+        ],
+        "mse_mean": 0.3085464510597762,
+        "mse_std": 0.0,
+        "nmse_mean": 0.3069891570960606,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -5.128769635993908,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.26,
+        "ber_std": 0.0
+      },
+      "20": {
+        "trials": [
+          {
+            "mse": 0.0033618057391777627,
+            "nmse": 0.003323935818612306,
+            "nmse_db": -24.783473705352247,
+            "ber": 0.008671875
+          }
+        ],
+        "mse_mean": 0.0033618057391777627,
+        "mse_std": 0.0,
+        "nmse_mean": 0.003323935818612306,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -24.783473705352247,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.008671875,
+        "ber_std": 0.0
+      }
+    },
+    "LMMSE": {
+      "0": {
+        "trials": [
+          {
+            "mse": 0.2446881471773596,
+            "nmse": 0.24345315849645519,
+            "nmse_db": -6.135845866605663,
+            "ber": 0.2592578125
+          }
+        ],
+        "mse_mean": 0.2446881471773596,
+        "mse_std": 0.0,
+        "nmse_mean": 0.24345315849645519,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -6.135845866605663,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.2592578125,
+        "ber_std": 0.0
+      },
+      "20": {
+        "trials": [
+          {
+            "mse": 0.0033679972567914936,
+            "nmse": 0.003330057590292333,
+            "nmse_db": -24.77548255703921,
+            "ber": 0.008681640625
+          }
+        ],
+        "mse_mean": 0.0033679972567914936,
+        "mse_std": 0.0,
+        "nmse_mean": 0.003330057590292333,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -24.77548255703921,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.008681640625,
+        "ber_std": 0.0
+      }
+    },
+    "ML": {
+      "0": {
+        "trials": [
+          {
+            "mse": 0.3109834303381,
+            "nmse": 0.3094138364658721,
+            "nmse_db": -5.09460269284302,
+            "ber": 0.260078125
+          }
+        ],
+        "mse_mean": 0.3109834303381,
+        "mse_std": 0.0,
+        "nmse_mean": 0.3094138364658721,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -5.09460269284302,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.260078125,
+        "ber_std": 0.0
+      },
+      "20": {
+        "trials": [
+          {
+            "mse": 0.0033842748223416284,
+            "nmse": 0.0033461517930421726,
+            "nmse_db": -24.75454361823911,
+            "ber": 0.00869140625
+          }
+        ],
+        "mse_mean": 0.0033842748223416284,
+        "mse_std": 0.0,
+        "nmse_mean": 0.0033461517930421726,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -24.75454361823911,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.00869140625,
+        "ber_std": 0.0
+      }
+    },
+    "CNN(raw_sym)": {
+      "0": {
+        "trials": [
+          {
+            "mse": 1.007257940621543,
+            "nmse": 1.0021741138413391,
+            "nmse_db": 0.009431807243025794,
+            "ber": 0.502470703125
+          }
+        ],
+        "mse_mean": 1.007257940621543,
+        "mse_std": 0.0,
+        "nmse_mean": 1.0021741138413391,
+        "nmse_std": 0.0,
+        "nmse_db_mean": 0.009431807243025794,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.502470703125,
+        "ber_std": 0.0
+      },
+      "20": {
+        "trials": [
+          {
+            "mse": 1.0136387352033442,
+            "nmse": 1.002220342422086,
+            "nmse_db": 0.00963213525196996,
+            "ber": 0.503876953125
+          }
+        ],
+        "mse_mean": 1.0136387352033442,
+        "mse_std": 0.0,
+        "nmse_mean": 1.002220342422086,
+        "nmse_std": 0.0,
+        "nmse_db_mean": 0.00963213525196996,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.503876953125,
+        "ber_std": 0.0
+      }
+    },
+    "GRU(raw_sym)": {
+      "0": {
+        "trials": [
+          {
+            "mse": 1.0147695389167102,
+            "nmse": 1.00964779963859,
+            "nmse_db": 0.04169903140025964,
+            "ber": 0.50390625
+          }
+        ],
+        "mse_mean": 1.0147695389167102,
+        "mse_std": 0.0,
+        "nmse_mean": 1.00964779963859,
+        "nmse_std": 0.0,
+        "nmse_db_mean": 0.04169903140025964,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.50390625,
+        "ber_std": 0.0
+      },
+      "20": {
+        "trials": [
+          {
+            "mse": 1.0140545883083796,
+            "nmse": 1.0026315110434607,
+            "nmse_db": 0.011413496459180725,
+            "ber": 0.488759765625
+          }
+        ],
+        "mse_mean": 1.0140545883083796,
+        "mse_std": 0.0,
+        "nmse_mean": 1.0026315110434607,
+        "nmse_std": 0.0,
+        "nmse_db_mean": 0.011413496459180725,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.488759765625,
+        "ber_std": 0.0
+      }
+    },
+    "CNN(ls_refine_x)": {
+      "0": {
+        "trials": [
+          {
+            "mse": 0.4795625338566649,
+            "nmse": 0.47714208845327755,
+            "nmse_db": -3.2135227286298615,
+            "ber": 0.291953125
+          }
+        ],
+        "mse_mean": 0.4795625338566649,
+        "mse_std": 0.0,
+        "nmse_mean": 0.47714208845327755,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -3.2135227286298615,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.291953125,
+        "ber_std": 0.0
+      },
+      "20": {
+        "trials": [
+          {
+            "mse": 0.4369519146268068,
+            "nmse": 0.43202975802953464,
+            "nmse_db": -3.6448633813203744,
+            "ber": 0.168671875
+          }
+        ],
+        "mse_mean": 0.4369519146268068,
+        "mse_std": 0.0,
+        "nmse_mean": 0.43202975802953464,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -3.6448633813203744,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.168671875,
+        "ber_std": 0.0
+      }
+    },
+    "GRU(ls_refine_x)": {
+      "0": {
+        "trials": [
+          {
+            "mse": 1.0108959022231514,
+            "nmse": 1.0057937139430084,
+            "nmse_db": 0.02508917019253705,
+            "ber": 0.502578125
+          }
+        ],
+        "mse_mean": 1.0108959022231514,
+        "mse_std": 0.0,
+        "nmse_mean": 1.0057937139430084,
+        "nmse_std": 0.0,
+        "nmse_db_mean": 0.02508917019253705,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.502578125,
+        "ber_std": 0.0
+      },
+      "20": {
+        "trials": [
+          {
+            "mse": 1.015495376865591,
+            "nmse": 1.004056069469473,
+            "nmse_db": 0.01757965778399024,
+            "ber": 0.501171875
+          }
+        ],
+        "mse_mean": 1.015495376865591,
+        "mse_std": 0.0,
+        "nmse_mean": 1.004056069469473,
+        "nmse_std": 0.0,
+        "nmse_db_mean": 0.01757965778399024,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.501171875,
+        "ber_std": 0.0
+      }
+    },
+    "LmmseNet(ls_refine_x)": {
+      "0": {
+        "trials": [
+          {
+            "mse": 0.2694758564203278,
+            "nmse": 0.26811575934862575,
+            "nmse_db": -5.716776582401791,
+            "ber": 0.25998046875
+          }
+        ],
+        "mse_mean": 0.2694758564203278,
+        "mse_std": 0.0,
+        "nmse_mean": 0.26811575934862575,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -5.716776582401791,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.25998046875,
+        "ber_std": 0.0
+      },
+      "20": {
+        "trials": [
+          {
+            "mse": 0.020859913181359713,
+            "nmse": 0.02062493135419036,
+            "nmse_db": -16.856074882348103,
+            "ber": 0.01419921875
+          }
+        ],
+        "mse_mean": 0.020859913181359713,
+        "mse_std": 0.0,
+        "nmse_mean": 0.02062493135419036,
+        "nmse_std": 0.0,
+        "nmse_db_mean": -16.856074882348103,
+        "nmse_db_std": 0.0,
+        "ber_mean": 0.01419921875,
+        "ber_std": 0.0
+      }
+    }
+  }
+}
