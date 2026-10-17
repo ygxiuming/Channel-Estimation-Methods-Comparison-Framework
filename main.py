@@ -43,11 +43,13 @@ import yaml
 import json
 
 from traditional.estimators import (LSEstimator, LMMSEEstimator, MLEstimator,
-                                    calculate_performance_metrics)
+                                    calculate_performance_metrics,
+                                    estimate_noise_var_blind)
 from deep_learning.models import (CNNEstimator, RNNEstimator, LSTMEstimator,
                                   GRUEstimator, HybridEstimator)
 from utils.data_generator import ChannelDataGenerator
 from utils.preprocessing import augment_triplets
+from utils.features import (build_dl_inputs, to_complex, complex_to_real_tensor)
 from utils.ber import simulate_qpsk_ber
 from utils.trainer import ChannelEstimatorTrainer
 from utils.plotting import setup_chinese_font, pad_cjk, disp_width
@@ -145,8 +147,8 @@ def print_config_panel(cfg: dict, device, config_path: str):
                             f"早停耐心 {tr['early_stopping']['patience']}"),
         ('数据增强 (Augmentation)', '启用' if cfg['data'].get('augmentation', {}).get('enabled')
                                   else '关闭'),
-        ('LMMSE协方差 (LMMSE cov)', cfg['traditional']['lmmse'].get('correlation_method',
-                                                                    'theoretical')),
+        ('LMMSE设置 (LMMSE)', f"{cfg['traditional']['lmmse'].get('correlation_method', 'theoretical')} 协方差, "
+                              f"噪声方差 {cfg['traditional']['lmmse'].get('noise_var_estimation', 'oracle')}"),
         ('结果目录 (Save dir)', cfg['experiment']['save_dir']),
         ('图表目录 (Plot dir)', cfg['experiment']['plot_dir']),
     ]
@@ -204,46 +206,6 @@ def get_config_value(config: dict, path: str) -> Any:
             return None
         value = value[key]
     return value
-
-
-def to_complex(pred: np.ndarray, n_tx: int) -> np.ndarray:
-    """将网络输出 (n, n_rx, 2*n_tx) 的 [实部|虚部] 拼接重组为复数信道"""
-    return pred[..., :n_tx] + 1j * pred[..., n_tx:]
-
-
-def complex_to_real_tensor(H: np.ndarray) -> np.ndarray:
-    """将复数信道 (n, n_rx, n_tx) 转为 (n, n_rx, 2*n_tx) 实数目标张量"""
-    return np.concatenate([H.real, H.imag], axis=-1).astype(np.float32)
-
-
-def build_dl_inputs(H: np.ndarray, X: np.ndarray, Y: np.ndarray,
-                    mode: str) -> np.ndarray:
-    """
-    构造深度学习模型的输入特征（输入必须携带信道信息）
-
-    参数:
-        H: 真实信道 (n, n_rx, n_tx)（仅 'ls_refine' 模式间接受用）
-        X: 导频符号 (n, n_tx, n_pilot)
-        Y: 接收信号 (n, n_rx, n_pilot)——唯一直接携带 H 信息的观测量
-        mode: 'raw' 或 'ls_refine'
-
-    返回:
-        展平的实数输入特征 (n, input_size)
-    """
-    n = H.shape[0]
-    if mode == 'raw':
-        feats = np.concatenate([
-            Y.real.reshape(n, -1), Y.imag.reshape(n, -1),
-            X.real.reshape(n, -1), X.imag.reshape(n, -1)
-        ], axis=1)
-    elif mode == 'ls_refine':
-        H_ls = LSEstimator(regularization=False).estimate(Y, X)
-        feats = np.concatenate([
-            H_ls.real.reshape(n, -1), H_ls.imag.reshape(n, -1)
-        ], axis=1)
-    else:
-        raise ValueError(f"未知的DL输入模式: {mode}")
-    return feats.astype(np.float32)
 
 
 def predict_model(model, inputs: np.ndarray, device, batch_size: int = 1024) -> np.ndarray:
@@ -395,6 +357,9 @@ def evaluate_all_methods(generator: ChannelDataGenerator,
     ber_symbols = cfg['evaluation'].get('ber_symbols', 100)
     equalizer = cfg['evaluation'].get('equalizer', 'mmse')
     lmmse_method = cfg['traditional']['lmmse'].get('correlation_method', 'theoretical')
+    noise_var_source = cfg['traditional']['lmmse'].get('noise_var_estimation', 'oracle')
+    if noise_var_source not in ('oracle', 'blind'):
+        raise ValueError("traditional.lmmse.noise_var_estimation 必须是 'oracle' 或 'blind'")
 
     results: Dict[str, Dict[float, List[Dict[str, float]]]] = {}
 
@@ -417,8 +382,15 @@ def evaluate_all_methods(generator: ChannelDataGenerator,
                 lambda_=cfg['traditional']['ls']['lambda'])
             estimates['LS'] = ls.estimate(Y, X)
 
+            # LMMSE 噪声方差来源：
+            #   'oracle' —— 数据生成器返回的真实值（与历史结果可比）
+            #   'blind'  —— 由 LS 残差盲估计，不使用上帝信息，对比更公平
+            if noise_var_source == 'blind':
+                noise_var_lmmse = estimate_noise_var_blind(Y, X)
+            else:
+                noise_var_lmmse = noise_var
             lmmse = LMMSEEstimator(
-                noise_var=noise_var,
+                noise_var=noise_var_lmmse,
                 correlation_method=lmmse_method,
                 channel_cov=R_h_sample if lmmse_method == 'sample' else None)
             estimates['LMMSE'] = lmmse.estimate(Y, X)

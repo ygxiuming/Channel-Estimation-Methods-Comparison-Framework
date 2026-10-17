@@ -11,9 +11,17 @@
   - 所有方法共用同一份测试数据、同一套指标口径（复数域 MSE/NMSE）
   - BER 通过**真实 QPSK 调制 → 信道 → AWGN → 均衡 → 判决**链路仿真获得
   - 评估数据每次独立新生成，LMMSE 协方差仅从训练集估计，**无数据泄漏**
-- **两种 DL 输入模式**（独立成组对比）
-  - `raw`：端到端，输入 `[Re(Y), Im(Y), Re(X), Im(X)]`
-  - `ls_refine`：混合式，输入 LS 估计的实虚部，网络学习 refine
+- **四种 DL 输入模式**（独立成组对比；两种改进模式修复了信息缺失问题）
+  - `raw`：块拼接（历史方式），`[Re(Y)|Im(Y)|Re(X)|Im(X)]` 四大块顺序展平
+  - `raw_sym`：**按导频符号重排（改进，默认）**——每个时间步 = 同一导频符号上的
+    `(y, x)` 配对，修复 CNN/RNN 局部感受野看不到配对结构的缺陷
+  - `ls_refine`：混合式（历史方式），仅输入 LS 估计的实虚部
+  - `ls_refine_x`：**混合式 + 导频特征（改进，默认）**——追加 `[Re(X), Im(X)]`，
+    网络可见逐样本噪声协方差 `noise_var·(XXᴴ)⁻¹`，修复高 SNR 处过度收缩的偏差
+- **LMMSE 噪声方差来源可选**
+  - `oracle`：使用数据生成器真实值（历史默认，便于与旧结果对比）
+  - `blind`：由 LS 残差**盲估计**，不使用上帝信息，先验条件与 DL 对齐
+- **uv 一键环境**：`uv sync` 自动准备 Python 3.12 与全部依赖，按 `uv.lock` 锁定可复现
 - **YOLO 风格训练体验**
   - 逐 epoch 表格输出（训练损失 / 验证损失 / 验证 NMSE(dB) / 学习率）
   - `weights/best.pt` + `weights/last.pt` 权重保存
@@ -23,30 +31,36 @@
   自动探测中文字体解决绘图乱码
 - **自动化报告**：实验结束后自动生成 Markdown 实验报告（结果总表、
   对比分析、结论、图表引用）
-- **完善测试**：21 项 pytest 合理性测试覆盖核心算法正确性
+- **完善测试**：pytest 覆盖估计器正确性、输入特征构造、盲噪声方差估计等核心算法
 
 ## 📁 目录结构 (Project Structure)
 
 ```
 ├── main.py                     # 主程序入口（仓库根目录）
+├── pyproject.toml              # uv 项目定义（依赖 / dev 组）
+├── uv.lock                     # uv 依赖锁定（精确版本，保证复现）
+├── .python-version             # 固定 Python 3.12
+├── requirements.txt            # pip 备用（由 uv export 生成）
 ├── src/
 │   ├── config/
 │   │   ├── default.yml         # 默认配置（完整实验）
 │   │   └── smoke.yml           # 冒烟配置（小规模快速验证）
 │   ├── traditional/
-│   │   └── estimators.py       # LS / LMMSE / ML 估计器 + 复数域指标
+│   │   └── estimators.py       # LS / LMMSE / ML 估计器 + 复数域指标 + 盲噪声方差估计
 │   ├── deep_learning/
 │   │   └── models.py           # CNN/RNN/LSTM/GRU/Hybrid（维度参数化）
 │   └── utils/
 │       ├── config.py           # 配置加载器
 │       ├── data_generator.py   # 信道/导频/接收信号生成（含噪声方差）
+│       ├── features.py         # DL 输入特征构造（四种输入模式）
 │       ├── preprocessing.py    # 全局一致缩放 + 物理一致同步增强
 │       ├── ber.py              # 真实 QPSK 链路 BER 仿真
 │       ├── plotting.py         # 中文字体配置 + CJK 终端对齐
 │       ├── report.py           # 自动对比分析 + Markdown 报告生成
 │       └── trainer.py          # YOLO 风格训练器
 ├── tests/
-│   └── test_estimators.py      # 21 项合理性测试
+│   ├── test_estimators.py      # 21 项合理性测试
+│   └── test_features.py        # 输入特征 + 盲噪声方差回归测试
 ├── requirements.txt
 └── README.md
 ```
@@ -56,6 +70,10 @@
 ### 1. 环境配置
 
 ```bash
+# 方式一（推荐）：uv 一键同步——自动准备 Python 3.12 与全部依赖（按 uv.lock 锁定）
+uv sync
+
+# 方式二：传统 venv + pip
 python -m venv venv
 source venv/bin/activate      # Linux / macOS
 .\venv\Scripts\activate       # Windows
@@ -67,19 +85,19 @@ pip install -r requirements.txt
 
 ```bash
 # 冒烟验证（几分钟内跑通全流程，建议先跑这个）
-python main.py --config src/config/smoke.yml --device cpu
+uv run python main.py --config src/config/smoke.yml --device cpu
 
 # 完整实验（默认配置：7 个 SNR × 5 种 DL 模型 × 2 种输入模式）
-python main.py
+uv run python main.py
 
 # 指定配置文件 / 设备 / 随机种子
-python main.py --config src/config/default.yml --device cuda --seed 42
+uv run python main.py --config src/config/default.yml --device cuda --seed 42
 ```
 
 ### 3. 运行测试
 
 ```bash
-python -m pytest tests/ -q
+uv run pytest tests/ -q
 ```
 
 ## 🖥️ 输出示例 (Sample Output)
@@ -91,7 +109,7 @@ python -m pytest tests/ -q
   | 配置文件 (Config)      | src/config/default.yml                   |
   | 信道 (Channel)         | rayleigh  4发×4收, 16 导频               |
   | SNR扫描 (SNR sweep)    | [0, 5, 10, 15, 20, 25, 30] dB            |
-  | DL输入模式 (DL inputs) | raw, ls_refine                           |
+  | DL输入模式 (DL inputs) | raw_sym, ls_refine_x                       |
   | ...                    | ...                                      |
   +------------------------+------------------------------------------+
 ```
@@ -151,6 +169,12 @@ plots/  (或配置中的 plot_dir)
 以下为默认配置（4×4 MIMO Rayleigh 信道、16 导频、训练池 10000 样本、
 每 SNR 点 2000 测试样本 × 3 次 Monte Carlo 重复、种子 42）的一次完整实验结果。
 完整数据（含标准差）见 [results/REPORT_20260726_160023.md](results/REPORT_20260726_160023.md)。
+
+> **注意**：下表结果由 **历史输入模式**（`raw` / `ls_refine` 块拼接 + LMMSE
+> oracle 噪声方差）生成。当前默认已切换为改进模式 `raw_sym` / `ls_refine_x`
+> （见上 ✨ 特性），修复了 DL 输入层的信息缺失问题，DL 的 NMSE/BER 预计
+> 显著改善；将 `dl.input_modes` 设为 `['raw', 'raw_sym']` 或
+> `['ls_refine', 'ls_refine_x']` 可做同条件 A/B 对比。
 
 ### NMSE-SNR 曲线（均值±标准差）
 
@@ -233,7 +257,7 @@ channel:
   rician_k: 1.0                  # Rician K 因子
 
 dl:
-  input_modes: ['raw', 'ls_refine']            # 两种 DL 输入模式
+  input_modes: ['raw_sym', 'ls_refine_x']      # DL 输入模式（含历史模式可切换 A/B）
   models: ['CNN','RNN','LSTM','GRU','Hybrid']  # 可裁剪子集以缩短实验时间
 
 evaluation:
@@ -249,7 +273,16 @@ traditional:
   lmmse:
     correlation_method: 'theoretical'  # 'theoretical'(R_h=I, 无泄漏)
                                        # 或 'sample'(仅从训练集估计)
+    # 噪声方差来源：
+    # 'oracle' —— 使用数据生成器真实值（历史默认）
+    # 'blind'  —— 由 LS 残差盲估计，不使用上帝信息，与 DL 先验条件对齐
+    noise_var_estimation: 'oracle'
 ```
+
+关于 DL 输入模式的完整说明见 `src/config/default.yml` 内注释与
+`src/utils/features.py` 模块文档字符串：
+`raw`/`raw_sym` 为端到端（后者按导频符号重排，推荐），
+`ls_refine`/`ls_refine_x` 为混合式（后者携带导频特征，推荐）。
 
 ## 📏 指标定义 (Metrics)
 
@@ -269,6 +302,9 @@ BER 仿真中所有方法使用**相同的比特与噪声种子**，保证对比
    DL 模型在同一份数据上评估
 3. **指标口径**：DL 模型输出先重组为复数信道，再走与传统方法完全相同的
    复数域指标与 BER 仿真流程
+4. **信息公平**：除历史模式 `ls_refine` 外，各 DL 输入模式均与 LMMSE 一样
+   可获得导频 X 的信息（`ls_refine_x` 显式包含）；LMMSE 的噪声方差默认
+   取生成器真实值（`oracle`），可配 `blind` 改为由 LS 残差盲估计
 
 ## ❓ 常见问题 (FAQ)
 
@@ -278,8 +314,10 @@ BER 仿真中所有方法使用**相同的比特与噪声种子**，保证对比
   若系统无任何中文字体，请安装后重试（会有提示）
 - **TensorBoard 不可用？** 在非 ASCII 路径等环境下会自动降级，不影响训练
 - **为什么 DL 暂时不如 LMMSE？** 该任务是低维线性逆问题，LMMSE 是已知
-  统计特性下的最优线性估计；DL 的优势需要更大数据量、更复杂信道模型
-  （如非线性、量化损伤）才能体现
+  统计特性下的最优线性估计。此外注意两个历史问题已在新版本修复：
+  `raw` 模式的块拼接使 CNN/RNN 局部感受野看不到 (y,x) 配对，
+  `ls_refine` 模式看不到导频 X 导致高 SNR 过度收缩——
+  请使用改进模式 `raw_sym` / `ls_refine_x` 再评估 DL 的真实水平
 
 ## 📄 许可证 (License)
 

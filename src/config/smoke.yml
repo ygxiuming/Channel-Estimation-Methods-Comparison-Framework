@@ -37,9 +37,12 @@ traditional:
     lambda: 0.01
   lmmse:
     correlation_method: 'theoretical'
+    # 'oracle'：真实噪声方差（可改 'blind' 走 LS 残差盲估计）
+    noise_var_estimation: 'oracle'
 
 dl:
-  input_modes: ['raw', 'ls_refine']
+  # 冒烟测试用改进后的输入模式，覆盖新代码路径
+  input_modes: ['raw_sym', 'ls_refine_x']
   # 冒烟测试只跑两个最快的模型
   models: ['CNN', 'GRU']
 

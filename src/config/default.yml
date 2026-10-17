@@ -65,15 +65,27 @@ traditional:
     # 'theoretical' —— 独立衰落信道 R_h = I（无数据泄漏，推荐）
     # 'sample'      —— 仅从训练集估计的样本相关矩阵
     correlation_method: 'theoretical'
+    # 噪声方差来源：
+    # 'oracle' —— 使用数据生成器返回的真实噪声方差（历史默认，结果与旧实验可比）
+    # 'blind'  —— 由 LS 残差盲估计（traditional/estimators.estimate_noise_var_blind），
+    #             不使用上帝信息，LMMSE 与深度学习方法的先验条件更对齐
+    noise_var_estimation: 'oracle'
   # 说明：ML 在线性高斯模型下有闭式解（等价于无正则LS），
   # 噪声方差由数据生成器提供，无需自适应估计
 
 # 深度学习设置
 dl:
-  # 输入模式（两种作为独立实验组分别训练评估）：
-  # 'raw'       —— 端到端，输入 [Re(Y),Im(Y),Re(X),Im(X)]
-  # 'ls_refine' —— 混合式，输入LS估计的实虚部，网络学习refine
-  input_modes: ['raw', 'ls_refine']
+  # 输入模式（每种模式作为独立实验组分别训练评估）：
+  # 'raw'         —— 块拼接（历史方式）：[Re(Y)|Im(Y)|Re(X)|Im(X)] 四大块顺序展平。
+  #                  缺陷：CNN 卷积/RNN 切分的局部感受野局限在"同一块内部"，
+  #                  看不到 (y,x) 配对，难以学习 H≈Y·X⁻¹ 的乘性结构
+  # 'raw_sym'     —— 按导频符号重排（推荐）：每个时间步 = 同一导频符号上的
+  #                  (y,x) 配对，与 RNN/卷积的时序/局部结构匹配（维度与 'raw' 相同）
+  # 'ls_refine'   —— 混合式（历史方式）：仅输入 LS 估计实虚部，网络学习 refine。
+  #                  缺陷：看不到导频 X，学不出逐样本噪声协方差相关的最优收缩
+  # 'ls_refine_x' —— 混合式 + 导频特征（推荐）：追加 [Re(X),Im(X)]，
+  #                  网络由此可学习逐样本噪声协方差 noise_var·(XXᴴ)⁻¹ 的影响
+  input_modes: ['raw_sym', 'ls_refine_x']
   # 参与实验的模型列表（可选 CNN/RNN/LSTM/GRU/Hybrid 的子集）
   models: ['CNN', 'RNN', 'LSTM', 'GRU', 'Hybrid']
 

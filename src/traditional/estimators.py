@@ -164,6 +164,42 @@ class MLEstimator:
         return LSEstimator(regularization=False).estimate(Y, X)
 
 
+def estimate_noise_var_blind(Y: np.ndarray, X: np.ndarray,
+                             H_ls: Optional[np.ndarray] = None) -> float:
+    """
+    盲噪声方差估计（基于 LS 残差，不使用数据生成器提供的"上帝"数值）
+
+    原理：LS 估计的残差 R = Y - H_ls·X 严格落在导频列空间的正交补中。
+    对每个接收天线行，该正交补维度为 (n_pilot - n_tx)，且残差每个元素
+    与信道输出噪声同方差（每复元素方差 noise_var），因此无偏估计为：
+
+        noise_var = Σ|R|² / (n_samples · n_rx · (n_pilot - n_tx))
+
+    仅使用观测 (Y, X)，为 LMMSE 提供"不知道上帝数值"的操作点，
+    使传统方法与深度学习方法在公平性上对齐（DL 同样不知道真实噪声方差）。
+
+    参数:
+        Y: 接收信号，shape=(n_samples, n_rx, n_pilot)
+        X: 导频符号，shape=(n_samples, n_tx, n_pilot)
+        H_ls: 可选，已有的 LS 估计（复数）；缺省时内部现算
+
+    返回:
+        噪声方差（每复数元素）的浮点估计值
+    """
+    n_tx, n_pilot = X.shape[1], X.shape[-1]
+    if n_pilot <= n_tx:
+        raise ValueError(
+            "盲噪声方差估计要求导频长度大于发射天线数 (n_pilot > n_tx)，"
+            "否则 LS 残差自由度为零")
+
+    if H_ls is None:
+        H_ls = LSEstimator(regularization=False).estimate(Y, X)
+
+    residual = Y - H_ls @ X                            # (n, n_rx, n_pilot)
+    # E[Σ|r|² / 元素数] = noise_var · (n_pilot - n_tx) / n_pilot
+    return float(np.mean(np.abs(residual) ** 2) * n_pilot / (n_pilot - n_tx))
+
+
 def calculate_performance_metrics(H_true: np.ndarray, H_est: np.ndarray) -> Dict[str, float]:
     """
     计算性能指标（统一在复数域计算，传统方法与深度学习方法口径一致）

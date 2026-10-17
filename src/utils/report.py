@@ -8,13 +8,25 @@
 """
 
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
+import re
 
 import numpy as np
 
+from utils.features import MODE_DESCRIPTIONS
+
 # 传统方法名（其余视为深度学习方法）
 TRADITIONAL_METHODS = ['LS', 'LMMSE', 'ML']
+
+# 解析 DL 方法名 "模型(模式)"，如 "CNN(raw_sym)" -> ("CNN", "raw_sym")
+_METHOD_MODE_RE = re.compile(r'^(.+)\((.+)\)$')
+
+
+def method_mode(name: str) -> Optional[str]:
+    """从方法名中提取输入模式；传统方法（无括号）返回 None"""
+    m = _METHOD_MODE_RE.match(name)
+    return m.group(2) if m else None
 
 
 def _fmt_mean_std(entry: dict, metric: str) -> str:
@@ -29,9 +41,11 @@ def analyze_results(aggregated: Dict[str, Dict[float, Dict[str, Any]]],
     """
     lines: List[str] = []
     methods = list(aggregated.keys())
-    dl_methods = [m for m in methods if m not in TRADITIONAL_METHODS]
-    raw_methods = [m for m in dl_methods if m.endswith('(raw)')]
-    refine_methods = [m for m in dl_methods if m.endswith('(ls_refine)')]
+    dl_methods = [m for m in methods if method_mode(m) is not None]
+    # 按输入模式分组（模式名取自方法名括号内，任意命名均可）
+    modes = sorted({method_mode(m) for m in dl_methods})
+    mode_methods = {mode: [m for m in dl_methods
+                           if method_mode(m) == mode] for mode in modes}
 
     # ---- 1. 逐SNR最优方法 ----
     lines.append("### 5.1 各SNR下的最优方法（按NMSE）\n")
@@ -75,18 +89,19 @@ def analyze_results(aggregated: Dict[str, Dict[float, Dict[str, Any]]],
                      f"二者 NMSE 差异仅来自 LS 的对角加载正则化"
                      f"（SNR={s_mid:.0f} dB 处相差 {diff:.2e}）。\n")
 
-    # ---- 4. DL 两种输入模式对比 ----
-    if raw_methods and refine_methods:
-        lines.append("### 5.4 深度学习两种输入模式对比\n")
-        lines.append("| SNR (dB) | 最优 raw | NMSE | 最优 ls_refine | NMSE |")
-        lines.append("|---|---|---|---|---|")
+    # ---- 4. DL 各输入模式对比 ----
+    if len(modes) >= 2:
+        lines.append("### 5.4 深度学习各输入模式对比\n")
+        lines.append("| SNR (dB) | " +
+                     " | ".join(f"最优 {mode} | NMSE" for mode in modes) + " |")
+        lines.append("|---|" + "---|---|" * len(modes))
         for s in snr_list:
-            best_raw = min(raw_methods, key=lambda m: aggregated[m][s]['nmse_mean'])
-            best_ref = min(refine_methods, key=lambda m: aggregated[m][s]['nmse_mean'])
-            lines.append(f"| {s:.0f} | {best_raw} | "
-                         f"{aggregated[best_raw][s]['nmse_mean']:.3e} | "
-                         f"{best_ref} | "
-                         f"{aggregated[best_ref][s]['nmse_mean']:.3e} |")
+            row = f"| {s:.0f} |"
+            for mode in modes:
+                best = min(mode_methods[mode],
+                           key=lambda m: aggregated[m][s]['nmse_mean'])
+                row += f" {best} | {aggregated[best][s]['nmse_mean']:.3e} |"
+            lines.append(row)
         lines.append("")
 
     # ---- 5. DL 与传统方法的整体差距 ----
@@ -112,7 +127,7 @@ def draw_conclusions(aggregated: Dict[str, Dict[float, Dict[str, Any]]],
                      snr_list: List[float]) -> List[str]:
     """根据分析结果自动归纳结论"""
     methods = list(aggregated.keys())
-    dl_methods = [m for m in methods if m not in TRADITIONAL_METHODS]
+    dl_methods = [m for m in methods if method_mode(m) is not None]
     lines = ["## 6. 结论\n"]
 
     # 传统方法结论
@@ -124,7 +139,7 @@ def draw_conclusions(aggregated: Dict[str, Dict[float, Dict[str, Any]]],
                      f"（增益 {min(gains):.2f}~{max(gains):.2f} dB），"
                      f"低SNR优势明显，高SNR趋同；ML 与 LS 基本重合，与理论一致。")
 
-    # DL 结论
+    # 深度学习方法
     if dl_methods:
         best_dl_overall = min(
             dl_methods,
@@ -140,7 +155,7 @@ def draw_conclusions(aggregated: Dict[str, Dict[float, Dict[str, Any]]],
             lines.append(f"3. **DL vs 传统**：当前配置下 DL 方法尚未超过最优传统方法"
                          f"（高SNR处差 {10*np.log10(dl_nmse/tr_nmse):.2f} dB）。"
                          f"可尝试增大训练样本量/epoch、加深网络、"
-                         f"或采用 ls_refine 混合式输入缩小差距。")
+                         f"或改用携带导频信息的混合式输入（ls_refine_x）缩小差距。")
         else:
             lines.append(f"3. **DL vs 传统**：DL 方法已超过最优传统方法"
                          f"（高SNR处领先 {10*np.log10(tr_nmse/dl_nmse):.2f} dB）。")
@@ -201,9 +216,11 @@ def generate_report(aggregated: Dict[str, Dict[float, Dict[str, Any]]],
     L.append("## 2. 对比方法\n")
     L.append("**传统方法**：LS（最小二乘）、LMMSE（线性最小均方误差）、"
              "ML（最大似然，闭式解）\n")
-    L.append("**深度学习方法**（两种输入模式分别成组）：")
-    L.append("- `raw`：端到端，输入 [Re(Y),Im(Y),Re(X),Im(X)]")
-    L.append("- `ls_refine`：混合式，输入 LS 估计的实虚部，网络学习 refine\n")
+    L.append("**深度学习方法**（各输入模式分别成组）：")
+    actual_modes = sorted({method_mode(m) for m in methods if method_mode(m)})
+    for mode in actual_modes:
+        L.append(f"- `{mode}`：{MODE_DESCRIPTIONS.get(mode, '自定义输入模式')}")
+    L.append("")
 
     # 3. 结果总表
     L.append("## 3. 结果总表\n")
