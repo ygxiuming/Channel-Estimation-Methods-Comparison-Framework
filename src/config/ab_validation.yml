@@ -1,0 +1,78 @@
+# 输入模式 A/B 对照验证配置
+# 目的：验证 v0.2.0 修复的两处输入信息缺失问题在公平条件下的实际收益
+#   - raw -> raw_sym     （按导频符号重排，修复 CNN/RNN 感受野与时间步语义）
+#   - ls_refine -> ls_refine_x（追加导频特征，修复逐样本噪声协方差不可见问题）
+# 除 input_modes 与 models 外，实验条件与 default.yml 完全一致（7 SNR 全扫描）。
+
+experiment:
+  name: 'ab_input_modes'
+  description: 'DL 输入模式 A/B 对照：修复模式 vs 历史模式'
+  seed: 42
+  use_cuda: true
+  save_dir: 'results'
+  plot_dir: 'plots'
+
+channel:
+  n_tx: 4
+  n_rx: 4
+  n_pilot: 16
+  snr_list: [0, 5, 10, 15, 20, 25, 30]
+  n_samples: 10000
+  type: 'rayleigh'
+  rician_k: 1.0
+
+data:
+  augmentation:
+    enabled: false
+    methods: ['phase_shift', 'magnitude_scale']
+    phase_shift_range: [-3.14159, 3.14159]
+    magnitude_scale_range: [0.8, 1.25]
+  split:
+    train_ratio: 0.7
+    val_ratio: 0.15
+  loader:
+    batch_size: 128
+    num_workers: 4
+    pin_memory: true
+
+traditional:
+  ls:
+    regularization: true
+    lambda: 0.01
+  lmmse:
+    correlation_method: 'theoretical'
+    # oracle：与历史实验可比；如需"无上帝信息"操作点可改 blind
+    noise_var_estimation: 'oracle'
+
+dl:
+  # 四种模式同时成组：历史对 ↔ 修复对，两两同条件可比
+  input_modes: ['raw', 'ls_refine', 'raw_sym', 'ls_refine_x']
+  # 两个最快的模型族覆盖 CNN 与时序网络，控制实验时长
+  models: ['CNN', 'GRU']
+
+models:
+  common:
+    learning_rate: 0.001
+    dropout: 0.3
+  rnn:
+    hidden_size: 256
+    num_layers: 2
+  lstm:
+    hidden_size: 256
+    num_layers: 2
+  gru:
+    hidden_size: 256
+    num_layers: 2
+  hybrid:
+    rnn_hidden_size: 256
+
+training:
+  epochs: 100
+  early_stopping:
+    patience: 10
+
+evaluation:
+  n_test: 2000
+  n_trials: 3
+  ber_symbols: 100
+  equalizer: 'mmse'
