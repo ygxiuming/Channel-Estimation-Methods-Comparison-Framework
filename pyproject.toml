@@ -1,6 +1,6 @@
 [project]
 name = "channel-estimation-comparison"
-version = "1.1.0"
+version = "1.2.0"
 description = "MIMO 信道估计方法对比实验框架：传统方法（LS/LMMSE/ML）与深度学习方法（CNN/RNN/LSTM/GRU/Hybrid）的严格公平对比"
 readme = "README.md"
 requires-python = ">=3.10"

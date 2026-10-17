@@ -100,3 +100,53 @@ def simulate_qpsk_ber(H_true: np.ndarray, H_est: np.ndarray, snr_db: float,
     ber = float(np.mean(bits != bits_est))
 
     return ber
+
+
+def simulate_qpsk_ber_ofdm(H_true: np.ndarray, H_est: np.ndarray, snr_db: float,
+                           n_symbols: int = 40, equalizer: str = 'mmse',
+                           rng: Optional[np.random.Generator] = None) -> float:
+    """
+    OFDM 频选信道的 QPSK 链路 BER 仿真（逐子载波 MIMO 均衡）
+
+    参数:
+        H_true: 真实频域信道 (n_samples, n_rx, n_sc, n_tx)
+        H_est:  估计频域信道，形状同上
+        snr_db: 与数据生成器一致的 SNR 口径（全符号平均信号功率/噪声功率）
+        n_symbols: 每个样本、每 (tx, 子载波) 发送的 QPSK 符号数
+        equalizer: 'zf' 或 'mmse'（逐子载波均衡）
+        rng: 随机数生成器（复现实验）
+
+    返回: 误比特率
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    n, n_rx, n_sc, n_tx = H_true.shape
+    if equalizer == 'zf' and n_rx < n_tx:
+        raise ValueError("ZF均衡要求 n_rx >= n_tx")
+
+    # 1) 全频域数据符号：bits (n, n_tx, n_sc, 2·n_sym) → S (n, n_tx, n_sc, n_sym)
+    bits = rng.integers(0, 2, size=(n, n_tx, n_sc, 2 * n_symbols))
+    S = qpsk_modulate(bits)
+
+    # 2) 通过真实信道 + 全局噪声口径（与生成器一致：全符号平均功率定方差）
+    Y_clean = np.einsum('nrkt,ntkm->nrkm', H_true, S)          # (n, n_rx, n_sc, n_sym)
+    noise_var = float(np.mean(np.abs(Y_clean) ** 2) / 10 ** (snr_db / 10))
+    noise = (rng.normal(0, np.sqrt(noise_var / 2), Y_clean.shape) +
+             1j * rng.normal(0, np.sqrt(noise_var / 2), Y_clean.shape))
+    Y = Y_clean + noise
+
+    # 3) 逐子载波均衡：该 (k) 上是 n_rx×n_tx 的平坦 MIMO
+    bits_est = np.zeros_like(bits)
+    eye = np.eye(n_tx)
+    for k in range(n_sc):
+        Hk_est = H_est[:, :, k, :]                                  # (n, n_rx, n_tx)
+        Hk_H = np.conjugate(np.transpose(Hk_est, (0, 2, 1)))
+        if equalizer == 'zf':
+            G = np.linalg.pinv(Hk_est)                              # (n, n_tx, n_rx)
+        else:
+            gram = np.matmul(Hk_H, Hk_est) + noise_var * eye[np.newaxis]
+            G = np.linalg.solve(gram, Hk_H)                         # (n, n_tx, n_rx)
+        S_est = np.matmul(G, Y[:, :, k, :])                         # (n, n_tx, n_sym)
+        bits_est[:, :, k, :] = qpsk_demodulate(S_est)
+
+    return float(np.mean(bits != bits_est))

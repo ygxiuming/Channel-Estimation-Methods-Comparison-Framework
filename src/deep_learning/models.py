@@ -43,25 +43,28 @@ def _make_fc(n_in: int, n_out: int, dropout: float = 0.3) -> nn.Sequential:
 
 
 class BaseEstimator(nn.Module):
-    """基类：统一处理输出维度 (n_rx, 2·n_tx)"""
+    """基类：统一处理输出维度 (n_rx, 2·n_sc·n_tx)；n_sc=1 为平坦信道"""
 
-    def __init__(self, input_size: int, n_rx: int, n_tx: int, dropout: float = 0.3):
+    def __init__(self, input_size: int, n_rx: int, n_tx: int,
+                 dropout: float = 0.3, n_sc: int = 1):
         super().__init__()
         self.input_size = input_size
         self.n_rx = n_rx
         self.n_tx = n_tx
-        self.output_size = n_rx * 2 * n_tx
+        self.n_sc = n_sc
+        self.output_size = n_rx * 2 * n_tx * n_sc
         self.dropout = dropout
 
     def _reshape_output(self, x: torch.Tensor) -> torch.Tensor:
-        return x.view(x.size(0), self.n_rx, 2 * self.n_tx)
+        return x.view(x.size(0), self.n_rx, self.output_size // self.n_rx)
 
 
 class CNNEstimator(BaseEstimator):
     """基于1D CNN的信道估计器"""
 
-    def __init__(self, input_size: int, n_rx: int, n_tx: int, dropout: float = 0.3):
-        super().__init__(input_size, n_rx, n_tx, dropout)
+    def __init__(self, input_size: int, n_rx: int, n_tx: int,
+                 dropout: float = 0.3, n_sc: int = 1):
+        super().__init__(input_size, n_rx, n_tx, dropout, n_sc)
 
         self.cnn = nn.Sequential(
             nn.Conv1d(1, 64, kernel_size=3, padding=1),
@@ -94,8 +97,9 @@ class RNNEstimator(BaseEstimator):
     """基于RNN的信道估计器"""
 
     def __init__(self, input_size: int, n_rx: int, n_tx: int,
-                 hidden_size: int = 256, num_layers: int = 2, dropout: float = 0.3):
-        super().__init__(input_size, n_rx, n_tx, dropout)
+                 hidden_size: int = 256, num_layers: int = 2, dropout: float = 0.3,
+                 n_sc: int = 1):
+        super().__init__(input_size, n_rx, n_tx, dropout, n_sc)
 
         self.seq_length, self.feature_size = _split_sequence(self.input_size)
 
@@ -113,8 +117,9 @@ class LSTMEstimator(BaseEstimator):
     """基于LSTM的信道估计器"""
 
     def __init__(self, input_size: int, n_rx: int, n_tx: int,
-                 hidden_size: int = 256, num_layers: int = 2, dropout: float = 0.3):
-        super().__init__(input_size, n_rx, n_tx, dropout)
+                 hidden_size: int = 256, num_layers: int = 2, dropout: float = 0.3,
+                 n_sc: int = 1):
+        super().__init__(input_size, n_rx, n_tx, dropout, n_sc)
 
         self.seq_length, self.feature_size = _split_sequence(self.input_size)
 
@@ -132,8 +137,9 @@ class GRUEstimator(BaseEstimator):
     """基于GRU的信道估计器"""
 
     def __init__(self, input_size: int, n_rx: int, n_tx: int,
-                 hidden_size: int = 256, num_layers: int = 2, dropout: float = 0.3):
-        super().__init__(input_size, n_rx, n_tx, dropout)
+                 hidden_size: int = 256, num_layers: int = 2, dropout: float = 0.3,
+                 n_sc: int = 1):
+        super().__init__(input_size, n_rx, n_tx, dropout, n_sc)
 
         self.seq_length, self.feature_size = _split_sequence(self.input_size)
 
@@ -170,8 +176,12 @@ class LmmseNetEstimator(BaseEstimator):
     """
 
     def __init__(self, input_size: int, n_rx: int, n_tx: int, n_pilot: int,
-                 dropout: float = 0.3, init_noise: float = 0.01):
-        super().__init__(input_size, n_rx, n_tx, dropout)
+                 dropout: float = 0.3, init_noise: float = 0.01, n_sc: int = 1):
+        if n_sc != 1:
+            raise ValueError(
+                "LmmseNet 的物理层依赖满秩的 X·Xᴴ，仅支持平坦信道（n_sc=1）；"
+                "OFDM 频选信道请使用 CNN/RNN/LSTM/GRU 等模型")
+        super().__init__(input_size, n_rx, n_tx, dropout, n_sc)
         self.n_pilot = n_pilot
         self.h_size = n_rx * n_tx
         self.x_size = n_tx * n_pilot
@@ -186,16 +196,20 @@ class LmmseNetEstimator(BaseEstimator):
         self.log_noise = nn.Parameter(torch.log(
             torch.as_tensor(float(init_noise))))              # r = exp(log_noise)
 
+        self.head = self._build_head(dropout)
+
+    def _build_head(self, dropout: float) -> nn.Module:
+        """构造校正头（子类可覆写以替换架构）。约定：末层零初始化。"""
         hidden = max(512, self.output_size)
-        self.head = nn.Sequential(
+        head = nn.Sequential(
             nn.Linear(4 * self.h_size, hidden),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden, self.output_size),
         )
-        # 校正头末层零初始化：起步即纯物理层（Y = LMMSE），只学残差
-        nn.init.zeros_(self.head[-1].weight)
-        nn.init.zeros_(self.head[-1].bias)
+        nn.init.zeros_(head[-1].weight)
+        nn.init.zeros_(head[-1].bias)
+        return head
 
     def _physics_layer(self, H_ls: torch.Tensor, X: torch.Tensor) -> torch.Tensor:
         """逐样本 LMMSE 物理层（复数批量求解）
@@ -240,12 +254,116 @@ class LmmseNetEstimator(BaseEstimator):
         return out
 
 
+class LmmseNetAttEstimator(LmmseNetEstimator):
+    """
+    注意力多层 unfolding 估计器（LmmseNet-Att）
+
+    在 LmmseNet 基础上的四处升级，目标一致：进一步收窄与 LMMSE 的差距。
+
+    1. 二段式物理层 unfolding：第一段同 LmmseNet；第二段再次执行 MMSE 投影，
+       但先验升级为可学习的对角信道功率矩阵 R₂ = diag(softplus(w))
+       （按发射维建模功率先验）与可学习二段噪声尺度 r₂。
+    2. 导频符号 token 注意力校正头：逐导频符号 k 组 token
+       [y'_k(各 rx), x_k(各 tx)]，其中 y' = H_ls·X 为 LS 投影观测，
+       经 Transformer 编码后池化——在 token 间显式建模逐样本噪声结构
+       （这是拼接式 MLP 无法表达的维度间关系）。
+    3. 特征拼接 [H₂, H_ls, 注意力池化] 进入校正 MLP。
+    4. 校正头末层零初始化：训练从纯物理层（第一段 LMMSE）出发，只学残差。
+
+    输入要求与 LmmseNet 相同（'ls_refine_x'、平坦信道 n_sc=1）。
+    """
+
+    def __init__(self, input_size: int, n_rx: int, n_tx: int, n_pilot: int,
+                 dropout: float = 0.3, init_noise: float = 0.01,
+                 d_model: int = 128, n_heads: int = 4, n_layers: int = 2,
+                 n_sc: int = 1):
+        self.d_model = d_model
+        self.attn_heads = n_heads
+        self.attn_layers = n_layers
+        super().__init__(input_size, n_rx, n_tx, n_pilot, dropout, init_noise,
+                         n_sc)
+
+    def _build_head(self, dropout: float) -> nn.Module:
+        import math
+        token_dim = 2 * (self.n_rx + self.n_tx)
+
+        # 二段物理层参数：R₂ 对角先验初始 = 1（softplus⁻¹(1) = ln(e-1)），r₂ 初始 1e-3
+        self.stage2_gain = nn.Parameter(torch.full(
+            (self.n_tx,), math.log(math.e - 1)))                            # softplus(w)
+        self.stage2_noise = nn.Parameter(
+            torch.log(torch.as_tensor(1e-3)))                               # exp → 1e-3
+
+        # 导频 token 注意力
+        self.tok_proj = nn.Linear(token_dim, self.d_model)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.d_model, nhead=self.attn_heads,
+            dim_feedforward=2 * self.d_model, dropout=dropout,
+            batch_first=True, activation='gelu', norm_first=True)
+        self.attn_encoder = nn.TransformerEncoder(encoder_layer,
+                                                  num_layers=self.attn_layers)
+
+        # 校正 MLP：[H₂ re/im | H_ls re/im | 注意力池化] → Δ
+        head = nn.Sequential(
+            nn.Linear(4 * self.h_size + self.d_model, 512),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(512, self.output_size),
+        )
+        nn.init.zeros_(head[-1].weight)
+        nn.init.zeros_(head[-1].bias)
+        return head
+
+    def _forward_stage2(self, H1: torch.Tensor, X: torch.Tensor) -> torch.Tensor:
+        """第二段物理层：h₂ = A₂⁻¹·R₂·h₁，A₂ = R₂ + r₂·(XXᴴ)⁻¹"""
+        G = torch.matmul(X, X.conj().transpose(-1, -2))
+        eye = torch.eye(self.n_tx, dtype=G.dtype, device=G.device)
+        r2 = self.stage2_noise.exp()
+        R2 = torch.diag(torch.nn.functional.softplus(self.stage2_gain)).to(H1.dtype)
+        A2 = R2[None, :, :] + r2 * torch.linalg.inv(G + 1e-10 * eye)
+        rhs = torch.matmul(R2, H1.transpose(-1, -2))                      # (B, n_tx, n_rx)
+        h2 = torch.linalg.solve(A2, rhs).transpose(-1, -2)                # (B, n_rx, n_tx)
+        return h2
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch = x.size(0)
+        h_re = x[:, :self.h_size].view(batch, self.n_rx, self.n_tx)
+        h_im = x[:, self.h_size:2 * self.h_size].view(batch, self.n_rx, self.n_tx)
+        x_re = x[:, 2 * self.h_size:2 * self.h_size + self.x_size] \
+            .view(batch, self.n_tx, self.n_pilot)
+        x_im = x[:, 2 * self.h_size + self.x_size:] \
+            .view(batch, self.n_tx, self.n_pilot)
+
+        H_ls = torch.complex(h_re, h_im)
+        X = torch.complex(x_re, x_im)
+
+        H1 = self._physics_layer(H_ls, X)
+        H2 = self._forward_stage2(H1, X)
+
+        # 导频 token：y'_k = (H_ls·X)[:, :, k] 与 x_k 配对 → (B, n_pilot, 2(n_rx+n_tx))
+        y_proj = torch.matmul(H_ls, X)                                    # (B, n_rx, n_pilot)
+        tokens = torch.cat([y_proj.transpose(1, 2).real,
+                            y_proj.transpose(1, 2).imag,
+                            X.transpose(1, 2).real,
+                            X.transpose(1, 2).imag], dim=2)
+        pooled = self.attn_encoder(self.tok_proj(tokens)).mean(dim=1)     # (B, d_model)
+
+        feats = torch.cat([H2.real.flatten(1), H2.imag.flatten(1),
+                           H_ls.real.flatten(1), H_ls.imag.flatten(1),
+                           pooled], dim=1)
+        delta = self.head(feats).view(batch, self.n_rx, 2 * self.n_tx)
+
+        out = torch.empty_like(delta)
+        out[..., :self.n_tx] = H2.real + delta[..., :self.n_tx]
+        out[..., self.n_tx:] = H2.imag + delta[..., self.n_tx:]
+        return out
+
+
 class HybridEstimator(BaseEstimator):
     """混合深度学习估计器（1D CNN + LSTM）"""
 
     def __init__(self, input_size: int, n_rx: int, n_tx: int,
-                 hidden_size: int = 256, dropout: float = 0.3):
-        super().__init__(input_size, n_rx, n_tx, dropout)
+                 hidden_size: int = 256, dropout: float = 0.3, n_sc: int = 1):
+        super().__init__(input_size, n_rx, n_tx, dropout, n_sc)
 
         self.seq_length, self.feature_size = _split_sequence(self.input_size)
 

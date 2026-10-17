@@ -200,6 +200,97 @@ def estimate_noise_var_blind(Y: np.ndarray, X: np.ndarray,
     return float(np.mean(np.abs(residual) ** 2) * n_pilot / (n_pilot - n_tx))
 
 
+class OFDMCombLSEstimator:
+    """
+    OFDM 梳状导频 LS 估计器（历史基线）：梳状栅格点精确 LS + 周期性线性插值
+
+    每个梳状子载波上只有一个发射天线活跃：y = h·s + n，因此该 (rx, tx, k)
+    的 LS 解为 h_ls = y / s（无偏、每个观测恰好一个自由度）；
+    栅格点之间用周期性线性插值。NMSE 受插值损耗限制，为 DL 提供对照基线。
+    """
+
+    def estimate(self, Y: np.ndarray, X: np.ndarray) -> np.ndarray:
+        """
+        参数:
+            Y: (n, n_rx, n_sc) 接收的导频 OFDM 符号
+            X: (n, n_tx, n_sc) 梳状导频（tx 在 k ≡ tx (mod n_tx) 的子载波非零）
+
+        返回: H_est (n, n_rx, n_sc, n_tx)
+        """
+        n, n_rx, n_sc = Y.shape
+        n_tx = X.shape[1]
+        n_ring = n_sc // n_tx          # 每根天线的梳状点数
+        u = np.arange(n_sc) / n_tx     # 环内位置 [0, n_ring)
+
+        H_est = np.zeros((n, n_rx, n_sc, n_tx), dtype=complex)
+        for t in range(n_tx):
+            cols = np.arange(t, n_sc, n_tx)
+            h_pilot = Y[:, :, cols] / X[:, t, cols][:, np.newaxis, :]      # (n, n_rx, n_ring)
+            u = ((np.arange(n_sc) - t) % n_sc) / n_tx                      # 环内位置 [0, n_ring)
+            H_est[:, :, :, t] = _interp_periodic(h_pilot, n_ring, u)
+        return H_est
+
+
+def _interp_periodic(values: np.ndarray, n_ring: int, u: np.ndarray) -> np.ndarray:
+    """
+    周期性线性插值：values (..., n_ring) 定义在 0..n_ring-1 的整数栅格上，
+    周期 n_ring；对任意位置 u（0 ≤ u < n_ring）线性插值。
+    """
+    x = np.concatenate([values, values[..., :1]], axis=-1)      # 首尾相接实现周期
+    lo = np.floor(u).astype(int) % n_ring
+    w = u - np.floor(u)                                          # (n_sc,) 末轴权重
+    return (1 - w) * x[..., lo] + w * x[..., lo + 1]
+
+
+class OFDMLMMSEEstimator:
+    """
+    OFDM MMSE 频域插值估计器（最优线性基线，PDP 先验解析闭式）
+
+    记 z = 梳状栅格上的 LS 观测向量（z_j = h(p_j) + ñ_j，ñ 方差 σ̃² = σ²/|s|²）。
+    频域相关由功率时延谱解析给出（平稳循环）：
+        R[m] = Σ_l pdp_l·exp(-2πj·m·l/N)
+    最优线性估计（Wiener 插值）：
+        ĥ(k) = R_hz(k,:)·(R_zz)⁻¹·z
+    其中 R_zz = R[Δp] + σ̃²·I。由于相关矩阵平移不变且各天线环位置等距，
+    滤波矩阵 W 对全部 (样本, rx, tx, 环) 相同——预计算一次即可批量应用。
+    """
+
+    def __init__(self, noise_var: float, n_taps: int, pdp: np.ndarray):
+        self.noise_var = float(noise_var)
+        self.n_taps = n_taps
+        self.pdp = np.asarray(pdp, dtype=float)
+
+    def estimate(self, Y: np.ndarray, X: np.ndarray) -> np.ndarray:
+        n, n_rx, n_sc = Y.shape
+        n_tx = X.shape[1]
+        n_ring = n_sc // n_tx
+
+        # 1) 梳状点 LS 观测 z (n, n_rx, n_tx, n_ring)
+        z = np.zeros((n, n_rx, n_tx, n_ring), dtype=complex)
+        for t in range(n_tx):
+            cols = np.arange(t, n_sc, n_tx)
+            z[:, :, t, :] = Y[:, :, cols] / X[:, t, cols][:, np.newaxis, :]
+
+        # 2) 解析相关：F[m] = Σ_l pdp_l·exp(-2πj·m·l/N)（m 为循环差）
+        F = (self.pdp[None, :] * np.exp(-2j * np.pi *
+             np.outer(np.arange(n_sc), np.arange(self.n_taps)) / n_sc)).sum(axis=1)
+
+        # 3) 滤波矩阵 W_t (n_sc, n_ring)： ĥ(k) = Σ_j W_t[k,j]·z_t[j]
+        sigma_tilde = self.noise_var * n_tx           # ñ 方差 = σ²/|s|²，|s|² = 1/n_tx
+        pilot_offsets = np.arange(n_ring) * n_tx      # 梳状点相对间隔（差分不含环移 t）
+        R_zz = F[(pilot_offsets[:, None] - pilot_offsets[None, :]) % n_sc] \
+            + sigma_tilde * np.eye(n_ring)
+        G = np.linalg.inv(R_zz)                       # (n_ring, n_ring)
+        H_est = np.zeros((n, n_rx, n_sc, n_tx), dtype=complex)
+        for t in range(n_tx):
+            # R_hz[k, j] = F[(k - t - j·n_tx) mod n_sc]
+            k_idx = (np.arange(n_sc) - t)[:, None] - pilot_offsets[None, :]   # (n_sc, n_ring)
+            R_hz = F[k_idx % n_sc]
+            W = R_hz @ G                                              # (n_sc, n_ring)
+            H_est[:, :, :, t] = np.einsum('kj,nrj->nrk', W, z[:, :, t, :])
+        return H_est
+
+
 def calculate_performance_metrics(H_true: np.ndarray, H_est: np.ndarray) -> Dict[str, float]:
     """
     计算性能指标（统一在复数域计算，传统方法与深度学习方法口径一致）

@@ -105,11 +105,12 @@ def analyze_results(aggregated: Dict[str, Dict[float, Dict[str, Any]]],
         lines.append("")
 
     # ---- 5. DL 与传统方法的整体差距 ----
-    if dl_methods:
+    traditional_present = [m for m in TRADITIONAL_METHODS if m in aggregated]
+    if dl_methods and traditional_present:
         lines.append("### 5.5 深度学习方法与传统方法的整体对比\n")
         for s in [snr_list[0], snr_list[-1]]:
             best_dl = min(dl_methods, key=lambda m: aggregated[m][s]['nmse_mean'])
-            best_tr = min(TRADITIONAL_METHODS,
+            best_tr = min(traditional_present,
                           key=lambda m: aggregated[m][s]['nmse_mean'])
             gap_db = 10 * np.log10(aggregated[best_dl][s]['nmse_mean'] /
                                    aggregated[best_tr][s]['nmse_mean'])
@@ -135,9 +136,12 @@ def draw_conclusions(aggregated: Dict[str, Dict[float, Dict[str, Any]]],
         gains = [10 * np.log10(aggregated['LS'][s]['nmse_mean'] /
                                max(aggregated['LMMSE'][s]['nmse_mean'], 1e-12))
                  for s in snr_list]
+        ml_note = ("；ML 与 LS 基本重合，与理论一致"
+                   if 'ML' in aggregated else
+                   "（本信道口径下 ML 无闭式等价，未纳入）")
         lines.append(f"1. **传统方法**：LMMSE 全部SNR点不劣于LS"
                      f"（增益 {min(gains):.2f}~{max(gains):.2f} dB），"
-                     f"低SNR优势明显，高SNR趋同；ML 与 LS 基本重合，与理论一致。")
+                     f"低SNR优势明显，高SNR趋同{ml_note}。")
 
     # 深度学习方法
     if dl_methods:
@@ -147,7 +151,7 @@ def draw_conclusions(aggregated: Dict[str, Dict[float, Dict[str, Any]]],
         lines.append(f"2. **深度学习方法**：全SNR平均表现最优的DL方法为 "
                      f"**{best_dl_overall}**。")
         best_tr_at_high = min(
-            TRADITIONAL_METHODS,
+            [m for m in TRADITIONAL_METHODS if m in aggregated],
             key=lambda m: aggregated[m][snr_list[-1]]['nmse_mean'])
         dl_nmse = aggregated[best_dl_overall][snr_list[-1]]['nmse_mean']
         tr_nmse = aggregated[best_tr_at_high][snr_list[-1]]['nmse_mean']

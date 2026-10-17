@@ -1,0 +1,80 @@
+# 注意力 / 多层 unfolding 对照实验
+
+# 研究问题：
+# 1. LmmseNetAtt（二段物理层 unfolding + 导频 token 注意力校正头）能否比
+#    单级 LmmseNet 更逼近贝叶斯最优 LMMSE？
+# 2. 训练池 1e4 → 5e4（随机导频不变），三种 DL 各提升多少？
+# 对照组：ab_validation.yml（随机导频 + 1e4 池）中的同名模型组合；
+# 注意平坦独立 Rayleigh 下 LMMSE 即贝叶斯最优，DL 目标是逼近而不是超越。
+
+experiment:
+  name: 'attention_unfolding'
+  description: 'LmmseNetAtt 对照 LmmseNet/GRU，5e4 大训练池'
+  seed: 42
+  use_cuda: true
+  save_dir: 'results'
+  plot_dir: 'plots'
+
+channel:
+  n_tx: 4
+  n_rx: 4
+  n_pilot: 16
+  snr_list: [0, 5, 10, 15, 20, 25, 30]
+  n_samples: 50000
+  type: 'rayleigh'
+  # 随机导频（与 A/B 基线同口径），隔离"池规模"这一变量
+  pilot_type: 'random'
+
+data:
+  augmentation:
+    enabled: false
+    methods: ['phase_shift', 'magnitude_scale']
+    phase_shift_range: [-3.14159, 3.14159]
+    magnitude_scale_range: [0.8, 1.25]
+  split:
+    train_ratio: 0.7
+    val_ratio: 0.15
+  loader:
+    batch_size: 128
+    num_workers: 4
+    pin_memory: false
+
+traditional:
+  ls:
+    regularization: true
+    lambda: 0.01
+  lmmse:
+    correlation_method: 'theoretical'
+    noise_var_estimation: 'oracle'
+
+dl:
+  # unfolding 物理层全部要求 ls_refine_x
+  input_modes: ['ls_refine_x']
+  models: ['GRU', 'LmmseNet', 'LmmseNetAtt']
+
+models:
+  common:
+    learning_rate: 0.001
+    dropout: 0.3
+  rnn:
+    hidden_size: 256
+    num_layers: 2
+  lstm:
+    hidden_size: 256
+    num_layers: 2
+  gru:
+    hidden_size: 256
+    num_layers: 2
+  hybrid:
+    rnn_hidden_size: 256
+
+training:
+  epochs: 100
+  early_stopping:
+    patience: 10
+
+evaluation:
+  n_test: 2000
+  n_trials: 3
+  ber_symbols: 100
+  equalizer: 'mmse'

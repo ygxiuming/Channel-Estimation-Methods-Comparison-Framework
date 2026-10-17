@@ -38,22 +38,46 @@ MODE_DESCRIPTIONS = {
 }
 
 
-def to_complex(pred: np.ndarray, n_tx: int) -> np.ndarray:
-    """将网络输出 (n, n_rx, 2*n_tx) 的 [实部|虚部] 拼接重组为复数信道"""
-    return pred[..., :n_tx] + 1j * pred[..., n_tx:]
+def to_complex(pred: np.ndarray, n_tx: int, n_sc: int = 1) -> np.ndarray:
+    """
+    将网络输出 (n, n_rx, 2·n_sc·n_tx) 的 [实部|虚部] 拼接重组为复数信道
+
+    n_sc=1（平坦信道）: 输出 (n, n_rx, n_tx)；
+    n_sc>1（OFDM 频选）: 输出 (n, n_rx, n_sc, n_tx)，
+    展平顺序与 complex_to_real_tensor 对 (n_rx, n_sc, n_tx) 的 C 序展开一致。
+    """
+    mid = pred.shape[-1] // 2
+    h_re = pred[..., :mid]
+    h_im = pred[..., mid:]
+    if n_sc == 1:
+        return h_re[..., :n_tx] + 1j * h_im[..., :n_tx]
+    return h_re.reshape(*h_re.shape[:-1], n_sc, n_tx) + \
+        1j * h_im.reshape(*h_im.shape[:-1], n_sc, n_tx)
 
 
 def complex_to_real_tensor(H: np.ndarray) -> np.ndarray:
-    """将复数信道 (n, n_rx, n_tx) 转为 (n, n_rx, 2*n_tx) 实数目标张量"""
-    return np.concatenate([H.real, H.imag], axis=-1).astype(np.float32)
+    """
+    将复数信道转为实数目标张量 (n, n_rx, [re|im])
+
+    平坦信道 (n, n_rx, n_tx) → (n, n_rx, 2·n_tx)；
+    OFDM 频选 (n, n_rx, n_sc, n_tx) → (n, n_rx, 2·n_sc·n_tx)
+    （按 (n_rx, n_sc, n_tx) 的 C 序展平，与 to_complex 的 n_sc 逆变换互逆）
+    """
+    if H.ndim < 3:
+        raise ValueError("H 至少是 3 维 (n, n_rx, *[n_sc,] n_tx)")
+    n, n_rx = H.shape[:2]
+    return np.concatenate([H.real.reshape(n, n_rx, -1),
+                           H.imag.reshape(n, n_rx, -1)], axis=-1).astype(np.float32)
 
 
-def get_input_size(mode: str, n_rx: int, n_tx: int, n_pilot: int) -> int:
+def get_input_size(mode: str, n_rx: int, n_tx: int, n_pilot: int,
+                   n_sc: int = 1) -> int:
     """返回指定输入模式的特征维度（与 build_dl_inputs 的输出维一致）"""
     if mode in ('raw', 'raw_sym'):
         return 2 * n_pilot * (n_rx + n_tx)
     if mode in ('ls_refine', 'ls_refine_x'):
-        return 2 * n_rx * n_tx + (2 * n_tx * n_pilot if mode == 'ls_refine_x' else 0)
+        return 2 * n_rx * n_sc * n_tx + \
+            (2 * n_tx * n_pilot if mode == 'ls_refine_x' else 0)
     raise ValueError(f"未知的DL输入模式: {mode}，可选 {INPUT_MODES}")
 
 
@@ -95,7 +119,12 @@ def build_dl_inputs(H: np.ndarray, X: np.ndarray, Y: np.ndarray,
             feats = np.concatenate([y_re, y_im, x_re, x_im], axis=2).reshape(n, -1)
 
     elif mode in ('ls_refine', 'ls_refine_x'):
-        H_ls = LSEstimator(regularization=False).estimate(Y, X)
+        if H.ndim == 4:
+            # OFDM 频选：LS = 梳状栅格精确解 + 周期性线性插值（全网格初始估计）
+            from traditional.estimators import OFDMCombLSEstimator
+            H_ls = OFDMCombLSEstimator().estimate(Y, X)
+        else:
+            H_ls = LSEstimator(regularization=False).estimate(Y, X)
         feats = np.concatenate([
             H_ls.real.reshape(n, -1), H_ls.imag.reshape(n, -1)
         ], axis=1)

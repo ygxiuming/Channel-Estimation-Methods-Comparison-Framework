@@ -44,14 +44,15 @@ import json
 
 from traditional.estimators import (LSEstimator, LMMSEEstimator, MLEstimator,
                                     calculate_performance_metrics,
-                                    estimate_noise_var_blind)
+                                    estimate_noise_var_blind,
+                                    OFDMCombLSEstimator, OFDMLMMSEEstimator)
 from deep_learning.models import (CNNEstimator, RNNEstimator, LSTMEstimator,
                                   GRUEstimator, HybridEstimator,
-                                  LmmseNetEstimator)
-from utils.data_generator import ChannelDataGenerator
+                                  LmmseNetEstimator, LmmseNetAttEstimator)
+from utils.data_generator import ChannelDataGenerator, OFDMDataGenerator
 from utils.preprocessing import augment_triplets
 from utils.features import (build_dl_inputs, to_complex, complex_to_real_tensor)
-from utils.ber import simulate_qpsk_ber
+from utils.ber import simulate_qpsk_ber, simulate_qpsk_ber_ofdm
 from utils.trainer import ChannelEstimatorTrainer
 from utils.plotting import setup_chinese_font, pad_cjk, disp_width
 from utils.report import generate_report
@@ -64,12 +65,17 @@ MODEL_REGISTRY = {
     'GRU': GRUEstimator,
     'Hybrid': HybridEstimator,
     'LmmseNet': LmmseNetEstimator,
+    'LmmseNetAtt': LmmseNetAttEstimator,
 }
 
 # 各模型对输入模式的要求（该模型只在指定模式下有意义）
 MODEL_REQUIREMENTS = {
-    'LmmseNet': ['ls_refine_x'],   # 物理层需要逐样本导频信息
+    'LmmseNet': ['ls_refine_x'],      # 物理层需要逐样本导频信息
+    'LmmseNetAtt': ['ls_refine_x'],   # 同上（注意力 unfolding 继承物理层）
 }
+
+# 仅支持平坦信道的模型：物理层依赖满秩 X·Xᴴ，OFDM 梳状导频下 X·Xᴴ 奇异
+FLAT_ONLY_MODELS = {'LmmseNet', 'LmmseNetAtt'}
 
 BANNER = r"""
    ____ _                            _   _____     _   _                 _
@@ -131,13 +137,21 @@ def print_progress(message: str, indent: int = 0):
 def print_config_panel(cfg: dict, device, config_path: str):
     """初始化参数面板（中文为主，英文以()标注）"""
     ch, dl, ev, tr = cfg['channel'], cfg['dl'], cfg['evaluation'], cfg['training']
+    # 信道描述：平坦信道显示导频结构；OFDM 频选显示子载波/抽头/PDP 参数
+    channel_desc = (f"{ch['type']}  {ch['n_tx']}发×{ch['n_rx']}收, "
+                    f"{ch['n_pilot']} 导频")
+    if ch['type'] == 'ofdm_freq_selective':
+        channel_desc = (f"{ch['type']}  {ch['n_tx']}发×{ch['n_rx']}收, "
+                        f"{ch['n_pilot']} 子载波, {ch.get('n_taps', 4)} 抽头, "
+                        f"指数PDP decay={ch.get('pdp_decay', 0.35)}, 梳状导频")
+    else:
+        channel_desc += f", 导频结构 {ch.get('pilot_type', 'random')}"
     rows = [
         ('配置文件 (Config)', config_path),
         ('实验名称 (Experiment)', cfg['experiment']['name']),
         ('随机种子 (Seed)', cfg['experiment']['seed']),
         ('运行设备 (Device)', str(device)),
-        ('信道 (Channel)', f"{ch['type']}  {ch['n_tx']}发×{ch['n_rx']}收, "
-                           f"{ch['n_pilot']} 导频"),
+        ('信道 (Channel)', channel_desc),
         ('SNR扫描 (SNR sweep)', f"{ch['snr_list']} dB"),
         ('训练池 (Train pool)', f"{ch['n_samples']} 样本 "
                                 f"(训练 {cfg['data']['split']['train_ratio']:.0%} / "
@@ -211,7 +225,7 @@ def apply_set_overrides(cfg: dict, overrides: List[str]) -> None:
         for k in path[:-1]:
             if not isinstance(node, dict):
                 raise ValueError(f"--set 路径无效（{key} 中 '{k}' 不是字典节点）")
-            node.setdefault(k, {})
+            node = node.setdefault(k, {})   # 必须接收返回值，否则 walk 不前进
         if not isinstance(node, dict):
             raise ValueError(f"--set 路径无效: {key}")
         node[path[-1]] = value
@@ -330,9 +344,10 @@ def prepare_dl_datasets(generator: ChannelDataGenerator,
 
 
 def resolve_model_combos(cfg: dict) -> List[tuple]:
-    """展开 (输入模式, 模型) 组合并剔除不满足模型模式要求的组合"""
+    """展开 (输入模式, 模型) 组合并剔除不满足模型模式/信道要求的组合"""
     modes = cfg['dl'].get('input_modes', ['raw', 'ls_refine'])
     model_names = cfg['dl'].get('models', list(MODEL_REGISTRY.keys()))
+    is_ofdm = cfg['channel']['type'] == 'ofdm_freq_selective'
     combos = []
     for mode in modes:
         for name in model_names:
@@ -343,6 +358,11 @@ def resolve_model_combos(cfg: dict) -> List[tuple]:
             if required and mode not in required:
                 print_progress(
                     f"跳过组合 {name}({mode})：{name} 仅支持模式 {required}。", 1)
+                continue
+            if is_ofdm and name in FLAT_ONLY_MODELS:
+                print_progress(
+                    f"跳过组合 {name}({mode})：{name} 的物理层依赖满秩 X·Xᴴ，"
+                    f"OFDM 梳状导频下奇异，仅支持平坦信道。", 1)
                 continue
             combos.append((mode, name))
     return combos
@@ -375,7 +395,10 @@ def train_dl_models(datasets: Dict[str, Dict[str, DataLoader]],
 
         kwargs = dict(input_size=datasets[mode]['input_size'], n_rx=n_rx,
                       n_tx=n_tx, dropout=common_cfg.get('dropout', 0.3))
-        if name == 'LmmseNet':
+        # OFDM 频选时输出覆盖全频域网格 (n_rx, n_sc, n_tx)，n_sc 取自 n_pilot
+        is_ofdm = cfg['channel']['type'] == 'ofdm_freq_selective'
+        kwargs['n_sc'] = cfg['channel']['n_pilot'] if is_ofdm else 1
+        if name in ('LmmseNet', 'LmmseNetAtt'):
             kwargs['n_pilot'] = cfg['channel']['n_pilot']
         elif name in ('RNN', 'LSTM', 'GRU'):
             kwargs['hidden_size'] = cfg['models'][name.lower()]['hidden_size']
@@ -445,6 +468,18 @@ def evaluate_all_methods(generator: ChannelDataGenerator,
     if noise_var_source not in ('oracle', 'blind'):
         raise ValueError("traditional.lmmse.noise_var_estimation 必须是 'oracle' 或 'blind'")
 
+    # OFDM 频选信道：输出覆盖全频域网格，ML 无闭式等价口径、盲方差无解析残差
+    is_ofdm = isinstance(generator, OFDMDataGenerator)
+    n_sc = cfg['channel']['n_pilot'] if is_ofdm else 1
+    if is_ofdm:
+        if lmmse_method == 'sample':
+            print_progress("OFDM 频选信道不支持 sample 协方差（4 维频域网格），"
+                           "LMMSE 使用 PDP 解析先验（theoretical）", 1)
+            lmmse_method = 'theoretical'
+        if noise_var_source == 'blind':
+            print_progress("OFDM 模式暂不支持盲噪声估计（梳状栅格 LS 观测恰好拟合、"
+                           "无解析残差），LMMSE 回退 oracle 口径", 1)
+
     results: Dict[str, Dict[float, List[Dict[str, float]]]] = {}
 
     def record(method: str, snr_db: float, metrics: Dict[str, float]):
@@ -461,25 +496,33 @@ def evaluate_all_methods(generator: ChannelDataGenerator,
             estimates: Dict[str, np.ndarray] = {}
 
             # ---- 传统方法 ----
-            ls = LSEstimator(
-                regularization=cfg['traditional']['ls']['regularization'],
-                lambda_=cfg['traditional']['ls']['lambda'])
-            estimates['LS'] = ls.estimate(Y, X)
-
-            # LMMSE 噪声方差来源：
-            #   'oracle' —— 数据生成器返回的真实值（与历史结果可比）
-            #   'blind'  —— 由 LS 残差盲估计，不使用上帝信息，对比更公平
-            if noise_var_source == 'blind':
-                noise_var_lmmse = estimate_noise_var_blind(Y, X)
+            if is_ofdm:
+                # 梳状栅格 LS 精确解 + 周期性线性插值（经典基线）
+                estimates['LS'] = OFDMCombLSEstimator().estimate(Y, X)
+                # MMSE 频域插值：PDP 解析先验（信道模型先验），噪声方差同 oracle 口径
+                estimates['LMMSE'] = OFDMLMMSEEstimator(
+                    noise_var=noise_var, n_taps=generator.n_taps,
+                    pdp=generator.pdp).estimate(Y, X)
             else:
-                noise_var_lmmse = noise_var
-            lmmse = LMMSEEstimator(
-                noise_var=noise_var_lmmse,
-                correlation_method=lmmse_method,
-                channel_cov=R_h_sample if lmmse_method == 'sample' else None)
-            estimates['LMMSE'] = lmmse.estimate(Y, X)
+                ls = LSEstimator(
+                    regularization=cfg['traditional']['ls']['regularization'],
+                    lambda_=cfg['traditional']['ls']['lambda'])
+                estimates['LS'] = ls.estimate(Y, X)
 
-            estimates['ML'] = MLEstimator().estimate(Y, X)
+                # LMMSE 噪声方差来源：
+                #   'oracle' —— 数据生成器返回的真实值（与历史结果可比）
+                #   'blind'  —— 由 LS 残差盲估计，不使用上帝信息，对比更公平
+                if noise_var_source == 'blind':
+                    noise_var_lmmse = estimate_noise_var_blind(Y, X)
+                else:
+                    noise_var_lmmse = noise_var
+                lmmse = LMMSEEstimator(
+                    noise_var=noise_var_lmmse,
+                    correlation_method=lmmse_method,
+                    channel_cov=R_h_sample if lmmse_method == 'sample' else None)
+                estimates['LMMSE'] = lmmse.estimate(Y, X)
+
+                estimates['ML'] = MLEstimator().estimate(Y, X)
 
             # ---- 深度学习方法 ----
             mode_inputs: Dict[str, np.ndarray] = {}
@@ -488,14 +531,19 @@ def evaluate_all_methods(generator: ChannelDataGenerator,
                 if mode not in mode_inputs:
                     mode_inputs[mode] = build_dl_inputs(H, X, Y, mode)
                 pred = predict_model(pack['model'], mode_inputs[mode], device)
-                estimates[full_name] = to_complex(pred, n_tx)
+                estimates[full_name] = to_complex(pred, n_tx, n_sc)
 
             # ---- 统一指标（复数域 MSE/NMSE + 真实BER，同种子公平对比）----
             for method, H_est in estimates.items():
                 metrics = calculate_performance_metrics(H, H_est)
-                metrics['ber'] = simulate_qpsk_ber(
-                    H, H_est, snr_db, n_symbols=ber_symbols,
-                    equalizer=equalizer, rng=np.random.default_rng(trial_seed))
+                if is_ofdm:
+                    metrics['ber'] = simulate_qpsk_ber_ofdm(
+                        H, H_est, snr_db, n_symbols=ber_symbols,
+                        equalizer=equalizer, rng=np.random.default_rng(trial_seed))
+                else:
+                    metrics['ber'] = simulate_qpsk_ber(
+                        H, H_est, snr_db, n_symbols=ber_symbols,
+                        equalizer=equalizer, rng=np.random.default_rng(trial_seed))
                 record(method, snr_db, metrics)
 
             print_progress(f"第 {trial + 1}/{n_trials} 次重复完成 (Trial done).", 1)
@@ -714,14 +762,24 @@ def main():
 
         # ========== 1. 生成训练池（H/X与SNR无关，只生成一次）==========
         print_section_header("第 1/4 步 — 生成训练数据池 (Generating training data pool)")
-        generator = ChannelDataGenerator(
-            n_tx=cfg['channel']['n_tx'],
-            n_rx=cfg['channel']['n_rx'],
-            n_pilot=cfg['channel']['n_pilot'],
-            channel_type=cfg['channel']['type'],
-            rician_k=cfg['channel'].get('rician_k', 1.0))
+        ch = cfg['channel']
+        if ch['type'] == 'ofdm_freq_selective':
+            # OFDM：n_pilot 复用为子载波数 N，梳状导频 + 指数功率时延谱
+            generator = OFDMDataGenerator(
+                n_tx=ch['n_tx'], n_rx=ch['n_rx'], n_sc=ch['n_pilot'],
+                n_taps=ch.get('n_taps', 4), pdp_decay=ch.get('pdp_decay', 0.35))
+            print_progress("OFDM 频选信道：梳状导频，传统基线为 comb-LS 线性插值 "
+                           "与 MMSE 频域插值（LmmseNet 系仅支持平坦信道，自动跳过）", 1)
+        else:
+            generator = ChannelDataGenerator(
+                n_tx=ch['n_tx'],
+                n_rx=ch['n_rx'],
+                n_pilot=ch['n_pilot'],
+                channel_type=ch['type'],
+                rician_k=ch.get('rician_k', 1.0),
+                pilot_type=ch.get('pilot_type', 'random'))
 
-        n_samples = cfg['channel']['n_samples']
+        n_samples = ch['n_samples']
         H_pool = generator.generate_channel(n_samples)
         X_pool = generator.generate_pilot_symbols(n_samples)
         print_progress(f"信道矩阵 H: {H_pool.shape}, 导频符号 X: {X_pool.shape}", 1)
@@ -733,9 +791,13 @@ def main():
         train_idx, val_idx = perm[:n_train], perm[n_train:n_train + n_val]
         print_progress(f"训练集: {n_train}, 验证集: {n_val}", 1)
 
-        # LMMSE 样本相关矩阵：仅从训练集估计（避免测试集数据泄漏）
-        H_train_rows = H_pool[train_idx].reshape(-1, cfg['channel']['n_tx'])
-        R_h_sample = (H_train_rows.conj().T @ H_train_rows) / H_train_rows.shape[0]
+        # LMMSE 样本相关矩阵：仅从训练集估计（避免测试集数据泄漏）。
+        # OFDM 频选信道使用 PDP 解析先验，无需样本协方差。
+        if ch['type'] == 'ofdm_freq_selective':
+            R_h_sample = None
+        else:
+            H_train_rows = H_pool[train_idx].reshape(-1, ch['n_tx'])
+            R_h_sample = (H_train_rows.conj().T @ H_train_rows) / H_train_rows.shape[0]
 
         # ========== 2. 构造DL数据集 ==========
         print_section_header("第 2/4 步 — 准备深度学习数据集 (Preparing DL datasets)")

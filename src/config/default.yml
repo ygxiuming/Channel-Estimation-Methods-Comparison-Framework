@@ -27,8 +27,18 @@ channel:
   snr_list: [0, 5, 10, 15, 20, 25, 30]
   # 训练池样本数量（评估测试数据每次独立生成，见 evaluation.n_test）
   n_samples: 10000
-  # 信道类型：'rayleigh' 或 'rician'
+  # 信道类型：'rayleigh' 或 'rician'，或 'ofdm_freq_selective'（频选，见下）
   type: 'rayleigh'
+  # 导频结构（平坦信道）：'random'（随机QPSK，历史方式）/'dft'/'hadamard'
+  # 正交导频满足 X·Xᴴ = (n_pilot/n_tx)·I，每符号功率与随机导频口径一致
+  pilot_type: 'random'
+  # —— 仅 type='ofdm_freq_selective' 时生效 ——
+  # 时域抽头数 L（1 ≤ L ≤ n_pilot）
+  n_taps: 4
+  # 指数功率时延谱衰减系数：pdp_l ∝ exp(-decay·l)，归一化后 Σpdp=1
+  pdp_decay: 0.35
+  # 注意：OFDM 模式下 n_pilot 复用为子载波数 N（需为 n_tx 整数倍），
+  # 导频自动切换为梳状结构，pilot_type 不再生效
   # Rician K因子（仅在type='rician'时有效）
   rician_k: 1.0
 

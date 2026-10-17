@@ -1,0 +1,91 @@
+# OFDM 频率选择性信道实验（DL 的主场）
+
+# 信号模型：单导频 OFDM 符号快照 + 梳状导频
+#   每根发射天线占用互补的子载波栅格（k ≡ tx mod n_tx），其余子载波不发送导频；
+#   信道为 L 抽头指数功率时延谱的频选信道，频域 H(k) 沿子载波强相关。
+#   估计任务 = 把稀疏梳状观测插值到整个频域网格。
+#
+# 为何 DL 在这里有机会：传统侧梳状 LS 只能线性插值（NMSE 被插值损耗钉死）；
+# MMSE 频域插值是给定 PDP/噪声先验下的最优估计——DL 不掌握这些先验，
+# 目标是靠数据逼近它并大幅甩开 LS：这就是"deep learning 在结构化（记忆）信道
+# 上发挥"的可验证形式。
+#
+# 说明：LmmseNet 系物理层依赖满秩 X·Xᴴ，OFDM 梳状导频下奇异，框架自动跳过。
+
+experiment:
+  name: 'ofdm_freq_selective'
+  description: 'MIMO-OFDM 频选信道：comb-LS / MMSE 频域插值 vs CNN/GRU'
+  seed: 42
+  use_cuda: true
+  save_dir: 'results'
+  plot_dir: 'plots'
+
+channel:
+  n_tx: 4
+  n_rx: 4
+  # n_pilot 在 OFDM 模式下复用为子载波数 N（必须为 n_tx 整数倍），
+  # 每根天线获得 n_pilot/n_tx = 4 个梳状观测
+  n_pilot: 16
+  snr_list: [0, 5, 10, 15, 20, 25, 30]
+  n_samples: 10000
+  type: 'ofdm_freq_selective'
+  n_taps: 4
+  # 指数功率时延谱：pdp_l ∝ exp(-0.35·l)，归一化 Σpdp=1
+  pdp_decay: 0.35
+
+data:
+  augmentation:
+    enabled: false
+    methods: ['phase_shift', 'magnitude_scale']
+    phase_shift_range: [-3.14159, 3.14159]
+    magnitude_scale_range: [0.8, 1.25]
+  split:
+    train_ratio: 0.7
+    val_ratio: 0.15
+  loader:
+    batch_size: 128
+    num_workers: 4
+    pin_memory: false
+
+traditional:
+  # note: ls 正则配置只用于平坦 LS；OFDM 梳状 LS 为逐点精确解，无需求逆
+  ls:
+    regularization: true
+    lambda: 0.01
+  lmmse:
+    # OFDM 使用 PDP 解析先验（本配置即 theoretical 语义）；不支持 sample
+    correlation_method: 'theoretical'
+    noise_var_estimation: 'oracle'
+
+dl:
+  # raw_sym 的"按导频符号重排"在梳状结构下无意义；用 raw 与 ls_refine_x
+  input_modes: ['raw', 'ls_refine_x']
+  models: ['CNN', 'GRU']
+
+models:
+  common:
+    learning_rate: 0.001
+    dropout: 0.3
+  rnn:
+    hidden_size: 256
+    num_layers: 2
+  lstm:
+    hidden_size: 256
+    num_layers: 2
+  gru:
+    hidden_size: 256
+    num_layers: 2
+  hybrid:
+    rnn_hidden_size: 256
+
+training:
+  epochs: 100
+  early_stopping:
+    patience: 10
+
+evaluation:
+  n_test: 1000
+  n_trials: 3
+  # BER 是逐子载波均衡（n_sc 次×每样本 n_tx·n_sc·2·n_symbols 比特），口径如下
+  ber_symbols: 50
+  equalizer: 'mmse'
