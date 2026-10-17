@@ -46,7 +46,8 @@ from traditional.estimators import (LSEstimator, LMMSEEstimator, MLEstimator,
                                     calculate_performance_metrics,
                                     estimate_noise_var_blind)
 from deep_learning.models import (CNNEstimator, RNNEstimator, LSTMEstimator,
-                                  GRUEstimator, HybridEstimator)
+                                  GRUEstimator, HybridEstimator,
+                                  LmmseNetEstimator)
 from utils.data_generator import ChannelDataGenerator
 from utils.preprocessing import augment_triplets
 from utils.features import (build_dl_inputs, to_complex, complex_to_real_tensor)
@@ -62,6 +63,12 @@ MODEL_REGISTRY = {
     'LSTM': LSTMEstimator,
     'GRU': GRUEstimator,
     'Hybrid': HybridEstimator,
+    'LmmseNet': LmmseNetEstimator,
+}
+
+# 各模型对输入模式的要求（该模型只在指定模式下有意义）
+MODEL_REQUIREMENTS = {
+    'LmmseNet': ['ls_refine_x'],   # 物理层需要逐样本导频信息
 }
 
 BANNER = r"""
@@ -165,14 +172,50 @@ def print_config_panel(cfg: dict, device, config_path: str):
 
 
 def parse_args():
-    """解析命令行参数（--config/--device/--seed 均实际生效）"""
+    """解析命令行参数
+
+    --config / --device / --seed / --resume / --set / --replot 均实际生效
+    """
     parser = argparse.ArgumentParser(description='信道估计方法比较研究')
     parser.add_argument('--config', type=str, default='src/config/default.yml',
                         help='配置文件路径')
     parser.add_argument('--device', type=str, choices=['cpu', 'cuda'],
                         help='运行设备（覆盖配置文件）')
     parser.add_argument('--seed', type=int, help='随机种子（覆盖配置文件）')
+    parser.add_argument('--resume', action='store_true',
+                        help='跳过已有 weights/best.pt 的模型复用权重复用'
+                             '（断点续跑 / 复用旧权重重新评估）')
+    parser.add_argument('--set', action='append', default=[],
+                        metavar='KEY=VALUE',
+                        help='覆盖任意配置项（点号路径，可多次）：'
+                             '--set channel.n_tx=8 --set dl.models=[CNN,GRU]')
+    parser.add_argument('--replot', type=str, metavar='RESULTS_JSON',
+                        help='不训练不评估：从已有 results_*.json 重绘图表'
+                             '并重新生成实验报告')
     return parser.parse_args()
+
+
+def apply_set_overrides(cfg: dict, overrides: List[str]) -> None:
+    """应用 --set 覆盖项（点号路径 = YAML 解析的值）"""
+    for item in overrides:
+        if '=' not in item:
+            raise ValueError(f"--set 参数格式应为 KEY=VALUE: {item}")
+        key, raw = item.split('=', 1)
+        key = key.strip()
+        try:
+            value = yaml.safe_load(raw)   # int/float/bool/list 自动解析
+        except yaml.YAMLError:
+            value = raw
+        node = cfg
+        path = key.split('.')
+        for k in path[:-1]:
+            if not isinstance(node, dict):
+                raise ValueError(f"--set 路径无效（{key} 中 '{k}' 不是字典节点）")
+            node.setdefault(k, {})
+        if not isinstance(node, dict):
+            raise ValueError(f"--set 路径无效: {key}")
+        node[path[-1]] = value
+        print_progress(f"配置覆盖: {key} = {value!r}")
 
 
 def load_config(config_path: str) -> dict:
@@ -286,54 +329,95 @@ def prepare_dl_datasets(generator: ChannelDataGenerator,
     return datasets
 
 
-def train_dl_models(datasets: Dict[str, Dict[str, DataLoader]],
-                    cfg: dict, device) -> Dict[str, Dict[str, Any]]:
-    """训练所有配置的深度学习模型（每个 输入模式 × 模型 组合训练一次）"""
-    n_rx, n_tx = cfg['channel']['n_rx'], cfg['channel']['n_tx']
-    common_cfg = cfg['models']['common']
+def resolve_model_combos(cfg: dict) -> List[tuple]:
+    """展开 (输入模式, 模型) 组合并剔除不满足模型模式要求的组合"""
+    modes = cfg['dl'].get('input_modes', ['raw', 'ls_refine'])
     model_names = cfg['dl'].get('models', list(MODEL_REGISTRY.keys()))
-    trained = {}
-    total = len(datasets) * len(model_names)
-    counter = 0
-
-    for mode, data in datasets.items():
+    combos = []
+    for mode in modes:
         for name in model_names:
             if name not in MODEL_REGISTRY:
                 print_progress(f"Warning: unknown model '{name}', skipped.", 1)
                 continue
+            required = MODEL_REQUIREMENTS.get(name)
+            if required and mode not in required:
+                print_progress(
+                    f"跳过组合 {name}({mode})：{name} 仅支持模式 {required}。", 1)
+                continue
+            combos.append((mode, name))
+    return combos
 
-            counter += 1
-            full_name = f"{name}({mode})"
-            print(f"\n{'─' * 78}")
-            print(f"  训练模型 [{counter}/{total}] (Training model): {full_name}")
-            print(f"{'─' * 78}")
 
-            kwargs = dict(input_size=data['input_size'], n_rx=n_rx, n_tx=n_tx,
-                          dropout=common_cfg.get('dropout', 0.3))
-            if name in ('RNN', 'LSTM', 'GRU'):
-                kwargs['hidden_size'] = cfg['models'][name.lower()]['hidden_size']
-                kwargs['num_layers'] = cfg['models'][name.lower()]['num_layers']
-            elif name == 'Hybrid':
-                kwargs['hidden_size'] = cfg['models']['hybrid']['rnn_hidden_size']
-            model = MODEL_REGISTRY[name](**kwargs)
+def model_project_name(experiment_name: str, model_name: str, mode: str) -> str:
+    """训练产物目录名（与 Trainer 保存结构一致）"""
+    return f"{experiment_name}_{model_name.lower()}_{mode}"
 
-            trainer = ChannelEstimatorTrainer(
-                model=model,
-                train_loader=data['train'],
-                val_loader=data['val'],
-                save_dir=cfg['experiment']['save_dir'],
-                project_name=f"{cfg['experiment']['name']}_{name.lower()}_{mode}",
-                device=device,
-                learning_rate=common_cfg['learning_rate'],
-                use_tensorboard=cfg.get('tensorboard', {}).get('enabled', True))
 
-            trainer.train(
-                epochs=cfg['training']['epochs'],
-                early_stopping_patience=cfg['training']['early_stopping']['patience'])
+def train_dl_models(datasets: Dict[str, Dict[str, DataLoader]],
+                    cfg: dict, device, resume: bool = False) -> Dict[str, Dict[str, Any]]:
+    """训练所有配置的深度学习模型（每个 输入模式 × 模型 组合训练一次）
 
-            trainer.load_model('best.pt')
-            trained[full_name] = {'model': trainer.model, 'trainer': trainer,
-                                  'mode': mode}
+    resume=True 时，已存在 weights/best.pt 的组合直接加载权重复用
+    （断点续跑 / 复用旧权重重新评估），不再重复训练。
+    """
+    n_rx, n_tx = cfg['channel']['n_rx'], cfg['channel']['n_tx']
+    common_cfg = cfg['models']['common']
+    combos = resolve_model_combos(cfg)
+    trained = {}
+    total = len(combos)
+
+    for counter, (mode, name) in enumerate(combos, start=1):
+        full_name = f"{name}({mode})"
+        project_name = model_project_name(cfg['experiment']['name'], name, mode)
+        print(f"\n{'─' * 78}")
+        print(f"  训练模型 [{counter}/{total}] (Training model): {full_name}")
+        print(f"{'─' * 78}")
+
+        kwargs = dict(input_size=datasets[mode]['input_size'], n_rx=n_rx,
+                      n_tx=n_tx, dropout=common_cfg.get('dropout', 0.3))
+        if name == 'LmmseNet':
+            kwargs['n_pilot'] = cfg['channel']['n_pilot']
+        elif name in ('RNN', 'LSTM', 'GRU'):
+            kwargs['hidden_size'] = cfg['models'][name.lower()]['hidden_size']
+            kwargs['num_layers'] = cfg['models'][name.lower()]['num_layers']
+        elif name == 'Hybrid':
+            kwargs['hidden_size'] = cfg['models']['hybrid']['rnn_hidden_size']
+        model = MODEL_REGISTRY[name](**kwargs)
+
+        if resume:
+            ckpt_path = (Path(cfg['experiment']['save_dir']) / project_name /
+                         'weights' / 'best.pt')
+            if ckpt_path.exists():
+                try:
+                    ckpt = torch.load(str(ckpt_path), map_location=device,
+                                      weights_only=False)
+                    model.load_state_dict(ckpt['model_state_dict'])
+                    print_progress(f"已复用现有权重，跳过训练: {ckpt_path}", 1)
+                    trained[full_name] = {'model': model.to(device),
+                                          'mode': mode, 'reused': True}
+                    continue
+                except Exception as e:
+                    print_progress(
+                        f"加载 {ckpt_path} 失败（结构/配置可能已变化），"
+                        f"将重新训练: {e}", 1)
+
+        trainer = ChannelEstimatorTrainer(
+            model=model,
+            train_loader=datasets[mode]['train'],
+            val_loader=datasets[mode]['val'],
+            save_dir=cfg['experiment']['save_dir'],
+            project_name=project_name,
+            device=device,
+            learning_rate=common_cfg['learning_rate'],
+            use_tensorboard=cfg.get('tensorboard', {}).get('enabled', True))
+
+        trainer.train(
+            epochs=cfg['training']['epochs'],
+            early_stopping_patience=cfg['training']['early_stopping']['patience'])
+
+        trainer.load_model('best.pt')
+        trained[full_name] = {'model': trainer.model, 'trainer': trainer,
+                              'mode': mode}
 
     return trained
 
@@ -570,10 +654,37 @@ def save_results(aggregated, cfg: dict, save_dir: Path, timestamp: str):
     print_progress(f"CSV 汇总已保存至: {csv_file}", 1)
 
 
+def run_replay(args) -> None:
+    """--replot：从已有 results_*.json 重绘全部图表并重新生成实验报告"""
+    path = Path(args.replot)
+    if not path.exists():
+        raise FileNotFoundError(f"--replot 指定的结果文件不存在: {path}")
+    with open(path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    cfg = data['config']
+    aggregated = {method: {float(snr): entry for snr, entry in snr_dict.items()}
+                  for method, snr_dict in data['results'].items()}
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    print_section_header(f"重绘图表与报告（来自 {path}）")
+    plot_files = plot_results(aggregated, cfg, timestamp)
+    report_path = generate_report(aggregated, cfg, plot_files,
+                                  Path(cfg['experiment']['save_dir']), timestamp)
+    print_progress(f"实验报告已重新生成: {report_path}")
+    print(f"图表目录: {Path(cfg['experiment']['plot_dir']).resolve()}")
+
+
 def main():
     """主函数"""
     args = parse_args()
+
+    if args.replot:
+        run_replay(args)
+        return
+
     cfg = load_config(args.config)
+    apply_set_overrides(cfg, args.set)
 
     # 命令行覆盖配置
     if args.device is not None:
@@ -634,7 +745,8 @@ def main():
 
         # ========== 3. 训练DL模型（YOLO 风格）==========
         print_section_header("第 3/4 步 — 训练深度学习模型 (Training DL models)")
-        trained_models = train_dl_models(datasets, cfg, device)
+        trained_models = train_dl_models(datasets, cfg, device,
+                                         resume=args.resume)
 
         # ========== 4. Monte Carlo 评估 ==========
         print_section_header("第 4/4 步 — Monte Carlo 评估 (Monte Carlo evaluation)")

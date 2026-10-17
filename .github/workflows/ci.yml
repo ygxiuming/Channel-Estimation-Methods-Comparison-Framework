@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: 单元测试 (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: 同步依赖（按 uv.lock 锁定）
+        run: uv sync --frozen
+      - name: 运行测试
+        run: uv run pytest tests/ -q
+
+  smoke:
+    name: 冒烟验证 (smoke 实验)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: 同步依赖（按 uv.lock 锁定）
+        run: uv sync --frozen
+      - name: 运行冒烟实验（CPU）
+        run: uv run python main.py --config src/config/smoke.yml --device cpu

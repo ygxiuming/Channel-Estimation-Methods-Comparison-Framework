@@ -43,8 +43,8 @@ traditional:
 dl:
   # 冒烟测试用改进后的输入模式，覆盖新代码路径
   input_modes: ['raw_sym', 'ls_refine_x']
-  # 冒烟测试只跑两个最快的模型
-  models: ['CNN', 'GRU']
+  # 冒烟测试混跑常规模型与 unfolding 模型，覆盖两条训练路径
+  models: ['CNN', 'GRU', 'LmmseNet']
 
 models:
   common:

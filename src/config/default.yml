@@ -86,8 +86,9 @@ dl:
   # 'ls_refine_x' —— 混合式 + 导频特征（推荐）：追加 [Re(X),Im(X)]，
   #                  网络由此可学习逐样本噪声协方差 noise_var·(XXᴴ)⁻¹ 的影响
   input_modes: ['raw_sym', 'ls_refine_x']
-  # 参与实验的模型列表（可选 CNN/RNN/LSTM/GRU/Hybrid 的子集）
-  models: ['CNN', 'RNN', 'LSTM', 'GRU', 'Hybrid']
+  # 参与实验的模型列表（可选 CNN/RNN/LSTM/GRU/Hybrid/LmmseNet 的子集；
+  # LmmseNet 仅在 ls_refine_x 模式下参与，其余模式自动跳过）
+  models: ['CNN', 'RNN', 'LSTM', 'GRU', 'Hybrid', 'LmmseNet']
 
 # 深度学习模型结构参数
 models:
