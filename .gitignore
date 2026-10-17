@@ -15,3 +15,6 @@ __pycache__/
 .zcode/
 venv/
 .venv/
+
+# 发版脚手架与提交清单
+release-notes/

@@ -22,6 +22,14 @@
   - `oracle`：使用数据生成器真实值（历史默认，便于与旧结果对比）
   - `blind`：由 LS 残差**盲估计**，不使用上帝信息，先验条件与 DL 对齐
 - **uv 一键环境**：`uv sync` 自动准备 Python 3.12 与全部依赖，按 `uv.lock` 锁定可复现
+- **模型驱动 Deep Unfolding：`LmmseNet`**——物理层在前向中显式执行逐样本
+  LMMSE 复数滤波（可学习噪声尺度 γ），校正头只学残差；起点即纯 LMMSE，
+  实测大幅收窄 DL 与 LMMSE 的差距（30 dB 处 +5.65 dB vs GRU）
+- **工程化 CLI**：`--resume`（断点续跑/复用权重）、`--set KEY=VALUE`（任意配置
+  覆盖）、`--replot results_*.json`（从结果文件重绘图表与报告）
+- **GitHub Actions CI**：pytest + 冒烟实验，每次 push/PR 自动验证
+- **Release 自动化**：`scripts/release.sh` 一键发布（版本推断 → 谷歌风格双语
+  notes 脚手架 → `gh release create` → 校验）
 - **YOLO 风格训练体验**
   - 逐 epoch 表格输出（训练损失 / 验证损失 / 验证 NMSE(dB) / 学习率）
   - `weights/best.pt` + `weights/last.pt` 权重保存
@@ -41,6 +49,12 @@
 ├── uv.lock                     # uv 依赖锁定（精确版本，保证复现）
 ├── .python-version             # 固定 Python 3.12
 ├── requirements.txt            # pip 备用（由 uv export 生成）
+├── .github/
+│   └── workflows/ci.yml        # GitHub Actions CI（pytest + 冒烟实验）
+├── scripts/
+│   ├── release.sh              # Release 自动发布 CLI（谷歌双语模板流程）
+│   ├── RELEASE_NOTES_TEMPLATE.md  # 谷歌风格双语 release notes 模板
+│   └── extract_commits.sh      # conventional commits 提取与分组
 ├── src/
 │   ├── config/
 │   │   ├── default.yml         # 默认配置（完整实验）
@@ -49,7 +63,7 @@
 │   ├── traditional/
 │   │   └── estimators.py       # LS / LMMSE / ML 估计器 + 复数域指标 + 盲噪声方差估计
 │   ├── deep_learning/
-│   │   └── models.py           # CNN/RNN/LSTM/GRU/Hybrid（维度参数化）
+│   │   └── models.py           # CNN/RNN/LSTM/GRU/Hybrid/LmmseNet（维度参数化）
 │   └── utils/
 │       ├── config.py           # 配置加载器
 │       ├── data_generator.py   # 信道/导频/接收信号生成（含噪声方差）
@@ -61,7 +75,8 @@
 │       └── trainer.py          # YOLO 风格训练器
 ├── tests/
 │   ├── test_estimators.py      # 21 项合理性测试
-│   └── test_features.py        # 输入特征 + 盲噪声方差回归测试
+│   ├── test_features.py        # 输入特征 + 盲噪声方差回归测试
+│   └── test_models.py          # LmmseNet 物理层 / 训练收敛性测试
 ├── requirements.txt
 └── README.md
 ```
@@ -99,6 +114,22 @@ uv run python main.py --config src/config/default.yml --device cuda --seed 42
 
 ```bash
 uv run pytest tests/ -q
+```
+
+### 4. 常用 CLI（工程化 flags）
+
+```bash
+# 断点续跑：已训练模型（weights/best.pt 存在）自动跳过，直接续训/复评
+uv run python main.py --resume
+
+# 任意配置覆盖（点号路径，可多次）——不改 yaml 做快速消融
+uv run python main.py --set channel.n_tx=8 --set dl.models='[CNN, LmmseNet]'
+
+# 从已有 results_*.json 重绘全部图表并重新生成报告（不训练不评估）
+uv run python main.py --replot results/results_20261017_200009.json
+
+# LMMSE 用盲噪声方差估计（无上帝信息）跑对比
+uv run python main.py --set traditional.lmmse.noise_var_estimation=blind
 ```
 
 ## 🖥️ 输出示例 (Sample Output)
@@ -303,6 +334,25 @@ plots/  (或配置中的 plot_dir)
    **不同实验的数字不可直接横比，同一实验表内对照才有效**——这也是本次
    全部对照在同一 run 内完成的原因。
 
+### LmmseNet 首验：Deep Unfolding 收窄与 LMMSE 的差距（v0.3.0，2026-10-17）
+
+`LmmseNet` 在前向中内嵌 LMMSE 物理层（`R·(R + r·(XXᴴ)⁻¹)⁻¹`，`R`、`r` 为可学习
+标量，r 即等效噪声方差），校正头从零初始化只学残差。与 GRU(ls_refine_x)
+同条件对照（`ls_refine_x` 模式、其余同 default.yml，seed 42，GPU）：
+
+| SNR (dB) | LmmseNet | GRU(ls_refine_x) | LMMSE（基准） |
+|---|---|---|---|
+| 0 dB | 2.75e-01 | 2.57e-01 | **2.46e-01** |
+| 15 dB | **1.31e-02** (+2.8 dB vs GRU) | 2.47e-02 | 9.76e-03 |
+| 30 dB | **4.59e-03** (+5.7 dB vs GRU) | 1.68e-02 | 3.13e-04 |
+
+- **30 dB 处比常规 DL 最佳好 5.7 dB**；与 LMMSE 的差距从 17.4 dB 收窄到
+  **11.7 dB**，且 5~30 dB 全中高 SNR 段优于 GRU、低 SNR 持平
+- 物理层提供了可靠下限：即使校正头没学到东西，起点也是纯 LMMSE，
+  不存在"学废"风险（对比 raw 家族 NMSE≈1 的失效模式）
+- 完整数据见 [results/REPORT_20261017_202104.md](results/REPORT_20261017_202104.md)，
+  曲线见 [plots/nmse_vs_snr_20261017_202104.png](plots/nmse_vs_snr_20261017_202104.png)
+
 ## ⚙️ 配置详解 (Configuration)
 
 完整配置见 `src/config/default.yml` 注释，核心项：
@@ -379,6 +429,28 @@ BER 仿真中所有方法使用**相同的比特与噪声种子**，保证对比
   `raw` 模式的块拼接使 CNN/RNN 局部感受野看不到 (y,x) 配对，
   `ls_refine` 模式看不到导频 X 导致高 SNR 过度收缩——
   请使用改进模式 `raw_sym` / `ls_refine_x` 再评估 DL 的真实水平
+
+## 🚢 版本发布 (Release)
+
+内置 GitHub CLI 自动发布流程（模板：[scripts/RELEASE_NOTES_TEMPLATE.md](scripts/RELEASE_NOTES_TEMPLATE.md)，
+谷歌产品发布说明风格的中英双语）：
+
+```bash
+# 1. 前置检查 + 版本号推断 + 生成双语 notes 脚手架（提交清单同目录自动导出）
+bash scripts/release.sh --prepare
+
+# 2. 按模板润色 release-notes/vX.Y.Z.md（每条两行：英文行 + 缩进中文行 + (#N)）
+
+# 3. 发布（重大/破坏性版本自动转草稿，人工确认后转正）
+bash scripts/release.sh --notes release-notes/vX.Y.Z.md
+#    --dry-run 预演 / --draft 强制草稿 / --title "主题短语" 带主题标题
+
+# 4. 草稿转正
+gh release edit vX.Y.Z --draft=false
+```
+
+规则要点：版本号按 conventional 推断（break→major(0.x 升 minor)，
+feat→minor，否则 patch），首次发版沿用 `pyproject.toml` 版本。
 
 ## 📄 许可证 (License)
 
