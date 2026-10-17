@@ -126,16 +126,19 @@ class ChannelEstimatorTrainer:
         self.model.eval()
         total_loss = 0.0
         total_power = 0.0
+        n_samples = 0
 
         with torch.no_grad():
             for X, y in self.val_loader:
                 X, y = X.to(self.device), y.to(self.device)
                 loss = self.criterion(self.model(X), y)
-                total_loss += loss.item()
-                total_power += y.pow(2).mean().item()
+                batch = y.size(0)
+                total_loss += loss.item() * batch
+                total_power += y.pow(2).mean().item() * batch
+                n_samples += batch
 
-        val_loss = total_loss / len(self.val_loader)
-        mean_power = total_power / len(self.val_loader)
+        val_loss = total_loss / n_samples
+        mean_power = total_power / n_samples
         nmse = val_loss / mean_power if mean_power > 0 else float('inf')
         nmse_db = 10 * torch.log10(torch.tensor(nmse)).item() if nmse > 0 else -float('inf')
         return val_loss, nmse_db

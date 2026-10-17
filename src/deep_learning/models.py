@@ -2,12 +2,15 @@
 深度学习信道估计模型模块
 
 所有模型统一约定：
-- 输入: 展平的实数特征向量 (batch, input_size)，由调用方根据输入模式构造：
-    * 'raw'       : [Re(Y), Im(Y), Re(X), Im(X)] 展平，input_size = 2·n_pilot·(n_rx+n_tx)
-    * 'ls_refine' : [Re(H_ls), Im(H_ls)] 展平，input_size = 2·n_rx·n_tx
+- 输入: 展平的实数特征向量 (batch, input_size)，由 utils/features.py 按输入模式构造：
+    * 'raw'         : [Re(Y), Im(Y), Re(X), Im(X)] 展平（逐导频点）
+    * 'raw_sym'     : 同 raw 内容，按导频符号分组排布（保持时序模型局部性）
+    * 'ls_refine'   : [Re(H_ls), Im(H_ls)] 展平
+    * 'ls_refine_x' : ls_refine + 导频实虚部（供 LmmseNet 物理层使用）
 - 输出: (batch, n_rx, 2·n_tx)，最后一维为 [实部 | 虚部] 拼接，
         由调用方重组为复数信道后再计算指标（与传统方法同口径）
 
+包含常规模型（CNN/RNN/LSTM/GRU/Hybrid）与模型驱动 unfolding 模型 LmmseNet。
 所有维度（n_rx, n_tx, input_size）由构造函数显式传入，不做任何隐式假设。
 """
 
